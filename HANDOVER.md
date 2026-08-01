@@ -204,6 +204,33 @@ it into `areas(name, key)`. Walking anywhere now teaches the client that area's
 `runto` keyword for free — no `areas <n> <m> keywords` harvest, and no falling
 back to the first-word guess (which yields `aardi`, not `aardington`).
 
+### Area keywords are not derivable — harvest them
+
+GMCP's zone is the display name with the spaces squeezed out (`earthplane`,
+`landofoz`), but **249 of Gaardian's 269 area names contain a space**, so
+`areaname LIKE '%earthplane%'` matched nothing and the map was never imported
+for most areas. The client then knew only the rooms you had physically walked,
+and clicking anything else said "no path found". `gaardianAreaIdFor()` resolves
+an area by comparing with all punctuation removed, preferring the display name
+GMCP supplied via `room.area`.
+
+The `runto` keyword is a different problem: it is **arbitrary**, not derived.
+`kobaloi` for "Keep of the Kobaloi", `tilule` for "Tilule Rehabilitation
+Clinic", `earthplane` for "Earth Plane 4". Every heuristic is a coin flip — the
+old one truncated the first word to five characters and sent `rt earth`. So the
+helper no longer guesses: with no keyword on record it runs
+`harvestAreaKeywords()` once (≈330 keywords from `areas 1 299 keywords`), waits,
+and retries the target.
+
+### Travel deadlines measure being stuck, not the journey
+
+The runto watchdog was a flat 12s, so a long speedwalk was abandoned while it was
+still walking — "it timed out but I still got moved". `armRuntoWatchdog` is now
+re-armed by every `room.info` (`noticeTravelProgress`), so it fires only after
+`RUNTO_STALL_MS` of *no room change*, with `RUNTO_TOTAL_MS` as a backstop.
+The walker's own per-step timeout does the same: before failing it checks whether
+the room actually changed, and retries once before giving up.
+
 ### One area, one name
 
 `rooms.area` used to be written from whatever string the caller happened to

@@ -415,6 +415,35 @@ export function xcpByIndex(index, overrideKw){
   }
 }
 
+// How long the character may stand still, mid-runto, before we give up on it.
+// Measured from the last room change rather than from the start of the journey.
+const RUNTO_STALL_MS = 15000;
+// A whole speedwalk still has to end sometime, even if it keeps moving.
+const RUNTO_TOTAL_MS = 120000;
+
+export function armRuntoWatchdog(t){
+  if(sndState.xcpAwaitingTimer) clearTimeout(sndState.xcpAwaitingTimer);
+  if(!sndState.xcpAwaitingStart) sndState.xcpAwaitingStart = Date.now();
+  sndState.xcpAwaitingTimer = setTimeout(()=>{
+    if(!sndState.xcpAwaitingArea) return;
+    sndState.xcpAwaitingArea = null;
+    sndState.xcpAwaitingStart = null;
+    appendOutput('[S&D] stopped moving before reaching '+t.areaName+'; skipping this target.\n','error');
+    xcpAbandonTarget(t, 'runto did not arrive');
+  }, RUNTO_STALL_MS);
+}
+
+/**
+ * Called from gmcp.js on every room.info: the character is still travelling, so
+ * push the deadline back. Without this a long `runto` was cut off mid-walk.
+ */
+export function noticeTravelProgress(){
+  const t = sndState.pendingXcp;
+  if(!t || !sndState.xcpAwaitingArea || !sndState.xcpAwaitingTimer) return;
+  if(sndState.xcpAwaitingStart && Date.now() - sndState.xcpAwaitingStart > RUNTO_TOTAL_MS) return;
+  armRuntoWatchdog(t);
+}
+
 export function xcpRecall(t, onComplete){
   // User's recall alias is an equipment sequence, not the simple 'rec' command.
   const recallSeq=(sndState.recallSequence||'wear garbage;enter;rem garbage;wear wpn;wear wpn 2').split(';');
@@ -501,8 +530,24 @@ export function xcpStep(t){
       return;
     }
     if(area.guessed){
-      appendOutput('[S&D] no keyword on record for "'+t.areaName+'"; guessing "'+area.key
-        + '". Run /areas to learn the real list.\n','system');
+      // Do not fire a guessed keyword at the game. Aardwolf's keywords are
+      // arbitrary -- `kobaloi` for "Keep of the Kobaloi", `tilule` for "Tilule
+      // Rehabilitation Clinic" -- so nothing derived from the display name is
+      // reliable, and the old first-word-truncated-to-five guess sent
+      // `rt earth` for Earth Plane 4. Ask the game for the real list instead;
+      // it is one command and it fixes every area at once.
+      if(!sndState.harvestedThisSession){
+        sndState.harvestedThisSession = true;
+        appendOutput('[S&D] no runto keyword on record for "'+t.areaName
+          + '" -- fetching the real list from the game, then retrying.\n','quest');
+        harvestAreaKeywords();
+        setTimeout(()=>{ if(sndState.pendingXcp===t) xcpStep(t); }, 12000);
+        return;
+      }
+      appendOutput('[S&D] the game\'s area list has no keyword for "'+t.areaName
+        + '"; walk there yourself, then /xcp '+t.index+'.\n','error');
+      xcpAbandonTarget(t, 'no runto keyword');
+      return;
     }
     const kw=area.key;
     t.recallSent=true;
@@ -514,13 +559,13 @@ export function xcpStep(t){
       // If the area never turns up, abandon this target. The old code carried on
       // to `where` anyway -- but `where` only works inside the target area, so
       // that just burned commands in the wrong place and never converged.
-      sndState.xcpAwaitingTimer=setTimeout(()=>{
-        if(sndState.xcpAwaitingArea){
-          sndState.xcpAwaitingArea=null;
-          appendOutput('[S&D] never arrived in '+t.areaName+' after runto; skipping.\n','error');
-          xcpAbandonTarget(t, 'runto did not arrive');
-        }
-      }, 12000);
+      //
+      // The deadline is on being STUCK, not on the journey: `runto` walks a
+      // speedwalk that can easily run past a flat 12s, and killing it mid-walk
+      // was the "it timed out but I still got moved" case. armRuntoWatchdog is
+      // re-armed by every room.info (see noticeTravelProgress), so it only fires
+      // once the character has genuinely stopped moving.
+      armRuntoWatchdog(t);
     });
     return;
   }

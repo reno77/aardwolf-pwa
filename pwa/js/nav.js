@@ -249,6 +249,22 @@ function step(){
   walk.expectUid = next.uid;
   clearStepTimer();
   walk.timer = setTimeout(() => {
+    if(!walk) return;
+    // The move may well have landed and the confirmation simply be late: GMCP
+    // arrives behind the move over a slow link, and this used to abort a walk
+    // that was in fact progressing -- "it timed out but I still got moved".
+    // Trust the room we are actually in over the clock.
+    if(currentRoom.uid && currentRoom.uid !== walk.lastFrom){
+      onRoomChanged();
+      return;
+    }
+    // Genuinely still in the same room: the command may have been swallowed.
+    walk.stalls = (walk.stalls || 0) + 1;
+    if(walk.stalls < 2){
+      appendOutput('[nav] no reply to that move; retrying\n', 'system');
+      step();
+      return;
+    }
     finish(false, 'movement timed out in ' + (currentRoom.name || '?'));
   }, STEP_TIMEOUT_MS);
 
@@ -260,8 +276,12 @@ function step(){
 export function onRoomChanged(){
   if(!walk) return;
   clearStepTimer();
+  walk.stalls = 0;          // we moved, so the link is alive
 
   if(currentRoom.uid === walk.targetUid){ finish(true); return; }
+  if(walk.targetName && String(currentRoom.name||'').toLowerCase() === walk.targetName){
+    finish(true); return;
+  }
 
   // While following a planned route through rooms the map does not know by uid,
   // "you are not where the map said" is the normal case, not an error: the

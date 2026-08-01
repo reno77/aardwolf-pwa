@@ -837,25 +837,71 @@ export function matchAardwolfToGaardian(uid, area, name, now, liveExits){
   return gaardianRoom;
 }
 
+const squash = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Which Gaardian area is this? Takes either a GMCP zone keyword or a display
+ * name.
+ *
+ * GMCP's zone has the spaces squeezed out -- `earthplane`, `landofoz`,
+ * `crusaders` -- while Gaardian stores display names, and **249 of its 269 area
+ * names contain a space**. The old `areaname LIKE '%earthplane%'` therefore
+ * missed most areas outright, so no Gaardian data was ever imported for them:
+ * the map held only the handful of rooms you had physically walked, and clicking
+ * anything else on it said "no path found".
+ *
+ * `areas(name, key)` is populated from GMCP room.area, which hands us the exact
+ * display name for the keyword, so that is tried first and is authoritative.
+ */
+export function gaardianAreaIdFor(areaName){
+  if(!gaardianDb || !areaName) return null;
+  const n = String(areaName).trim().toLowerCase();
+  if(!n) return null;
+
+  // 1. The display name GMCP gave us for this keyword (or vice versa).
+  const names = [n];
+  try {
+    const r = sqlDb.exec('SELECT name, key FROM areas WHERE key=? OR name=? LIMIT 1', [n, n]);
+    if(r.length && r[0].values.length){
+      const [nm, key] = r[0].values[0];
+      if(nm) names.unshift(String(nm).toLowerCase());
+      if(key) names.push(String(key).toLowerCase());
+    }
+  } catch(e){ /* areas table is a hint, not a requirement */ }
+
+  try {
+    const all = gaardianDb.exec('SELECT areaid, areaname FROM areas');
+    const rows = all[0]?.values || [];
+    // 2. Exact match once punctuation and spaces are removed from both sides.
+    for(const want of names.map(squash)){
+      if(want.length < 3) continue;
+      for(const [id, nm] of rows) if(squash(nm) === want) return id;
+    }
+    // 3. Containment either way -- 'landofoz' inside 'thelandofoz', or
+    //    'aardington' as the start of 'aardingtonestate'.
+    for(const want of names.map(squash)){
+      if(want.length < 5) continue;
+      for(const [id, nm] of rows){
+        const s = squash(nm);
+        if(s.includes(want) || want.includes(s)) return id;
+      }
+    }
+  } catch(e){ /* fall through */ }
+  return null;
+}
+
 export function lookupGaardianRoom(areaName, roomName) {
   if (!gaardianDb || !areaName || !roomName) return null;
   try {
-    const sql = `
-      SELECT r.areaid, r.local_id, r.roomname, r.xpos, r.ypos
-      FROM rooms r
-      JOIN areas a ON a.areaid = r.areaid
-      WHERE (a.areaname LIKE ? COLLATE NOCASE OR a.areaname LIKE ? COLLATE NOCASE)
-        AND (r.roomname LIKE ? COLLATE NOCASE OR r.roomname LIKE ? COLLATE NOCASE)
-      LIMIT 5
-    `;
-    const res = gaardianDb.exec(sql, [`%${areaName}%`, `%${roomName.split(' ').pop()}%`, `%${roomName}%`, `%${roomName.replace(/^\+|\+$/g, '')}%`]);
+    const areaid = gaardianAreaIdFor(areaName);
+    if (areaid == null) return null;
+    // Exact name first; the LIKE is only for the odd trailing marker.
+    const res = gaardianDb.exec(
+      `SELECT areaid, local_id, roomname, xpos, ypos FROM rooms
+        WHERE areaid=? AND (roomname=? COLLATE NOCASE OR roomname LIKE ? COLLATE NOCASE)
+        ORDER BY (roomname=? COLLATE NOCASE) DESC LIMIT 5`,
+      [areaid, roomName, `%${roomName}%`, roomName]);
     if (!res.length || !res[0].values.length) return null;
-    // Prefer exact match
-    for (const row of res[0].values) {
-      if (String(row[2]).toLowerCase() === roomName.toLowerCase()) {
-        return { areaid: row[0], local_id: row[1], roomname: row[2], xpos: row[3], ypos: row[4] };
-      }
-    }
     const row = res[0].values[0];
     return { areaid: row[0], local_id: row[1], roomname: row[2], xpos: row[3], ypos: row[4] };
   } catch (e) {

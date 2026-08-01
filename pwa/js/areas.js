@@ -134,9 +134,22 @@ export function lookupArea(areaName){
       return {name, key, lock: lock||0, nogo: !!nogo, guessed: false};
     }
   }
-  // Last resort: the old first-word heuristic, flagged so callers can warn.
-  const guess = n.replace(/^the\s+/, '').replace(/\s+.*/, '').replace(/[^a-z0-9]/g, '').slice(0, 5);
-  return guess ? {name: n, key: guess, lock: 0, nogo: NO_GO.has(guess), guessed: true} : null;
+  // Last resort. Aardwolf's keyword is the display name with the spaces squeezed
+  // out ('Earth Plane 4' -> 'earthplane', 'The Land of Oz' -> 'landofoz'), NOT
+  // its first word truncated to five characters -- that produced `rt earth`,
+  // which the game rejects. Try the squashed forms first and keep the old
+  // first-word guess only as a final fallback.
+  const bare = n.replace(/^the\s+/, '');
+  const squashed = bare.replace(/[^a-z0-9]/g, '');
+  const candidates = [
+    squashed.replace(/\d+$/, ''),   // 'earthplane4' -> 'earthplane'
+    squashed,
+    bare.replace(/\s+.*/, '').replace(/[^a-z0-9]/g, ''),
+    bare.replace(/\s+.*/, '').replace(/[^a-z0-9]/g, '').slice(0, 5),
+  ].filter(k => k && k.length >= 3);
+  const guess = candidates[0];
+  return guess ? {name: n, key: guess, alts: candidates.slice(1), lock: 0,
+                  nogo: NO_GO.has(guess), guessed: true} : null;
 }
 
 /** Kept for callers that only want the keyword string. */

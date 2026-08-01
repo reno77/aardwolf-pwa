@@ -2,7 +2,7 @@
 
 import { matchAardwolfToGaardian, mergeAreaAliases, persistDb, sqlDb } from './db.js';
 import { renderRooms, onRoomChanged } from './nav.js';
-import { sndState, xcpStep } from './snd.js';
+import { noticeTravelProgress, sndState, xcpStep } from './snd.js';
 import { appendOutput, stripAnsi } from './ui.js';
 // --- state owned by this module ---
 export let currentRoom={name:'Unknown',area:'',exits:[]};
@@ -132,8 +132,12 @@ export function processGMCP(key, data){
     // change, which makes it the reliable "did that move land?" signal.
     onRoomChanged();
     // If xcp is waiting for arrival in this area, resume
+    // Still moving: push the runto deadline back rather than cutting a long
+    // speedwalk off part way.
+    noticeTravelProgress();
     if(sndState.xcpAwaitingArea && area && (area.toLowerCase().includes(sndState.xcpAwaitingArea) || sndState.xcpAwaitingArea.includes(area.toLowerCase()))){
       sndState.xcpAwaitingArea=null;
+      sndState.xcpAwaitingStart=null;
       if(sndState.xcpAwaitingTimer){ clearTimeout(sndState.xcpAwaitingTimer); sndState.xcpAwaitingTimer=null; }
       if(sndState.pendingXcp) xcpStep(sndState.pendingXcp);
     }
