@@ -212,13 +212,12 @@ export function gaardianUid(areaid, localId){ return `gaardian:${areaid}:${local
 export function importGaardianAreaByName(areaName){
   if(!sqlDb || !gaardianDb || !areaName) return false;
   const name=areaName.toLowerCase();
-  // If already imported, nothing to do.
-  if(resolveAreaUid(name)) return true;
-  // Find Gaardian area matching the name.
   try {
-    const res=gaardianDb.exec('SELECT areaid FROM areas WHERE LOWER(areaname) LIKE ?', ['%'+name+'%']);
-    if(res.length && res[0].values.length){
-      const areaid=res[0].values[0][0];
+    // Resolve properly rather than by LIKE: GMCP keywords have the spaces
+    // squeezed out, and 249 of the 269 Gaardian names contain one.
+    const areaid=gaardianAreaIdFor(name);
+    if(areaid!=null){
+      if(isAreaImported(areaid)) return true;      // already have it
       const count=importGaardianArea(areaid, name);
       if(count>0){
         appendOutput('[Gaardian] Auto-imported '+count+' rooms for "'+name+'"\n','system');
@@ -319,8 +318,16 @@ export function mergeAreaAliases(displayName, key){
   } catch(e){ return 0; }
 }
 
-export function importGaardianArea(gaardianAreaid, aardwolfAreaName){
+export function importGaardianArea(gaardianAreaid, aardwolfAreaName, force){
   if(!sqlDb || !gaardianDb || !gaardianAreaid) return 0;
+  // The guard belongs HERE, not in one caller. importGaardianAreaByName had its
+  // own, `resolveAreaUid('keep of the kobaloi')`, which can never match because
+  // rooms are stored under the canonical keyword ('kobaloi') -- so the area was
+  // re-imported on every room lookup. Each re-import re-creates gaardian: rows
+  // for rooms already promoted to live uids and re-inserts their exits, which
+  // splits the graph in half underneath a walk that is already in progress: the
+  // route to the Kobaloi throne room began with a step the room did not have.
+  if(!force && isAreaImported(gaardianAreaid)) return 0;
   try {
     let areaName = canonicalArea(aardwolfAreaName || '');
     if(!areaName){

@@ -213,7 +213,8 @@ function step(){
         appendOutput('[nav] room not in the map yet; following the planned route\n','system');
       }
     } else {
-      finish(false, 'lost the route in ' + (currentRoom.name||'?'));
+      finish(false, 'lost the route in ' + (currentRoom.name||'?')
+        + (walk.gateNote ? ' -- ' + walk.gateNote + ', and there is no way round' : ''));
       return;
     }
   } else {
@@ -311,8 +312,8 @@ export function onRoomChanged(){
 // arrives and only the step timeout would notice. These are the mapper's
 // cancel_speedwalk triggers plus the door cases from Search-and-Destroy.
 const BLOCKED = [
-  {re:/^There is no exit in that direction/im,      msg:'no exit that way'},
-  {re:/^Alas, you cannot go that way/im,            msg:'cannot go that way'},
+  {re:/^There is no exit in that direction/im,      msg:'no exit that way', deadEnd:true},
+  {re:/^Alas, you cannot go that way/im,            msg:'cannot go that way', deadEnd:true},
   {re:/^The door is closed/im,                      msg:null, open:true},
   {re:/is closed\.$/im,                             msg:null, open:true},
   {re:/^The door is locked/im,                      msg:'the door is locked'},
@@ -322,6 +323,17 @@ const BLOCKED = [
   {re:/^You are regaining balance/im,               msg:null, retry:true},
   {re:/^You fumble about drunkenly/im,              msg:null, retry:true},
   {re:/^Magic walls bounce you back/im,             msg:'blocked by magic walls', noportal:true},
+  // A guard mob standing in the way. The exit exists and is open -- you are just
+  // not allowed through it -- so the move produces speech and no room change,
+  // which used to look like a timeout. Confirmed live at the Keep of the
+  // Kobaloi: 'A Kobalos peace keeper says, "I'm sorry - only Kobaloi may enter
+  // without an official pass to the Keep."'
+  {re:/only \w+ may enter/im,                       msg:'a guard will not let you through', gated:true},
+  {re:/\bmay not enter\b/im,                        msg:'a guard will not let you through', gated:true},
+  {re:/\bblocks your way\b/im,                      msg:'something blocks the way',         gated:true},
+  {re:/refuses to let you pass/im,                  msg:'a guard will not let you through', gated:true},
+  {re:/\byou are not allowed\b/im,                  msg:'not allowed through there',        gated:true},
+  {re:/\byou cannot enter\b/im,                     msg:'you cannot enter there',           gated:true},
   {re:/^You cannot (recall|return home) from this room/im, msg:'cannot recall here', norecall:true},
 ];
 
@@ -345,6 +357,43 @@ export function onMudText(text){
     }
     if(b.stand){ sendCmdRaw('stand'); clearStepTimer(); walk.timer = setTimeout(step, 800); return; }
     if(b.retry){ clearStepTimer(); walk.timer = setTimeout(step, 1200); return; }
+    // The exit is real but you are not allowed through it. Park it at level 999
+    // -- the "never auto-path" marker the schema already has -- so the router
+    // goes round rather than walking into the same guard every time. It stays in
+    // the map because you can still use it yourself once you have the pass.
+    if(b.gated && walk.lastFrom && walk.lastDir){
+      try {
+        sqlDb.run('UPDATE exits SET level=999 WHERE from_uid=? AND dir=?', [walk.lastFrom, walk.lastDir]);
+        appendOutput('[nav] '+walk.lastDir+' from here is guarded; routing around it\n','system');
+      } catch(e){ console.error(e); }
+      // Remembered so that if there turns out to be no way round, the failure
+      // can say what actually stopped us instead of "lost the route".
+      walk.gateNote = (b.msg || 'the way is guarded') + ' ('
+        + walk.lastDir + ' from ' + (currentRoom.name || 'here') + ')';
+      if(++walk.repaths <= MAX_REPATH){
+        walk.plan = null;
+        walk.blind = false;
+        clearStepTimer();
+        walk.timer = setTimeout(step, 600);
+        return;
+      }
+    }
+    // "There is no exit that way" is the map being wrong, not the walk being
+    // impossible: delete the edge we were told to take and try another route.
+    // Leaving it in place meant the same bad edge was chosen again next time.
+    if(b.deadEnd && walk.lastFrom && walk.lastDir){
+      try {
+        sqlDb.run('DELETE FROM exits WHERE from_uid=? AND dir=?', [walk.lastFrom, walk.lastDir]);
+        appendOutput('[nav] there is no '+walk.lastDir+' here; removed it from the map\n','system');
+      } catch(e){ console.error(e); }
+      if(++walk.repaths <= MAX_REPATH){
+        walk.plan = null;              // the plan was built on the edge just deleted
+        walk.blind = false;
+        clearStepTimer();
+        walk.timer = setTimeout(step, 600);
+        return;
+      }
+    }
     finish(false, b.msg || 'movement blocked');
     return;
   }
