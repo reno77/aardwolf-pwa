@@ -204,6 +204,43 @@ it into `areas(name, key)`. Walking anywhere now teaches the client that area's
 `runto` keyword for free — no `areas <n> <m> keywords` harvest, and no falling
 back to the first-word guess (which yields `aardi`, not `aardington`).
 
+### Room identity: which Gaardian room is this?
+
+The hard part of using an imported map. Neither obvious key works:
+
+- **Names repeat.** Only 10,740 of 22,362 Gaardian rooms (48%) have a name unique
+  within their own area. Aardington Estate has **twelve** "Path around the manor"
+  and eight "Catacombs".
+- **`coord` is the area's position, not the room's.** Every room in the estate
+  reports `{x:38, y:25}` — the same value `room.area` carries. Verified against
+  three different rooms. It cannot separate twins.
+
+What does identify a room is the graph around it: GMCP publishes exits as
+`{direction: neighbour-uid}`, so every edge constrains two rooms at once.
+Identification is therefore **constraint propagation**, in `db.js`:
+
+- `room_candidates` holds the surviving hypotheses for a room that is not yet
+  certain. A room is never promoted on a guess.
+- `narrowCandidates` shrinks a set using, strongest first: a neighbour we already
+  know, an inbound edge from a room we know, a neighbour whose *name* we know
+  from having stood in it, and finally the exit-direction fingerprint. Each only
+  ever narrows — a constraint that would empty the set is ignored, because GMCP
+  omits closed exits.
+- `cascadeAnchors` carries one certain anchor outwards: if this room is Gaardian
+  room L and `dir` leads to live room U, then U is whatever L's `dir` exit
+  reaches. Breadth-first, so a single certain room aligns everything reachable.
+- `reconcileArea` re-runs narrowing over still-ambiguous rooms for a few rounds,
+  since each new anchor is fresh evidence for its neighbours.
+
+Why the discipline matters: promotion **rewrites a room's edges**, so a wrong
+identification cannot be undone and surfaces much later as a walk that sets off
+in the wrong direction. Measured before this was fixed: 83 rooms, 82 of them
+skeleton, the one real room holding two dead-end exits, and every route across
+the area failing while standing in it. After: 5 anchored, **0 ambiguous**, and
+`/xcp 1` walks the single correct step to the target room.
+
+`promoteGaardianRoom` is now a pure merge — it does no inference of its own.
+
 ### When there is no mapped route at all
 
 `gotoRoomUid` used to report failure and stop. Importing an area from Gaardian

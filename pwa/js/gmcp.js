@@ -113,7 +113,7 @@ export function processGMCP(key, data){
     // Cross-reference with Gaardian map database and import the whole area
     // Pass the exits GMCP just reported so a repeated room name can be told
     // apart from its twins by fingerprint rather than picked arbitrarily.
-    const gaardianRoom = matchAardwolfToGaardian(uid, area, name, now, Object.keys(exits), exits);
+    const gaardianRoom = matchAardwolfToGaardian(uid, area, name, now, exits);
     if (gaardianRoom) {
       // If Gaardian has coordinates and we don't, inherit them (scaled to local grid)
       try {

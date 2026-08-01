@@ -78,6 +78,13 @@ const SCHEMA_SQL = `
     mob TEXT NOT NULL, area TEXT NOT NULL, room TEXT, room_uid TEXT,
     seen_count INTEGER DEFAULT 1, last_seen TEXT,
     PRIMARY KEY(mob, area, room));
+  -- Surviving hypotheses for a live room whose Gaardian twin is not yet certain.
+  -- See "ROOM IDENTITY" below: identification is constraint propagation, and a
+  -- room keeps a candidate set until the graph narrows it to exactly one.
+  CREATE TABLE IF NOT EXISTS room_candidates(
+    uid TEXT NOT NULL, areaid INTEGER NOT NULL, local_id INTEGER NOT NULL,
+    PRIMARY KEY(uid, areaid, local_id));
+  CREATE INDEX IF NOT EXISTS idx_cand_uid ON room_candidates(uid);
   CREATE TABLE IF NOT EXISTS gaardian_imported(areaid INTEGER PRIMARY KEY, imported_at TEXT);
   CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
   -- Shortcut buttons in the row above the command input. Seeded once from the
@@ -438,44 +445,44 @@ function liveExitsOf(uid){
 }
 
 /**
- * `synthetic` is the Gaardian room's own exit list, captured before the merge
- * deleted it. Where the live room has a GMCP exit in the same direction, the two
- * neighbours are the same room -- so promote that neighbour and carry on.
+ * Carry a *certain* anchor outwards along the exits.
+ *
+ * Once a live room is known to be Gaardian room L, every one of its GMCP exits
+ * resolves a neighbour for free: going `dir` from here reaches live room U, and
+ * L's own `dir` exit reaches Gaardian room M, so U is M. Repeat breadth-first
+ * and one confirmed room aligns the reachable part of the area.
+ *
+ * This is only ever seeded from a certain identification. Seeding it from a
+ * guess is what previously corrupted the graph: promotion rewrites a room's
+ * edges, so a wrong seed propagated the error across the whole area and the
+ * walk died with "lost the route".
  */
-function propagatePromotion(seedUid, seedSynthetic, gaardianAreaid, areaName){
-  let queue = [[seedUid, seedSynthetic]];
-  const seen = new Set([seedUid]);
-  let promoted = 0;
-  while(queue.length && promoted < 400){
-    const [uid, synthetic] = queue.shift();
-    if(!synthetic || !synthetic.length) continue;
-    const bySynthDir = new Map(synthetic.map(([d, t]) => [d, t]));
+function cascadeAnchors(seedUid, areaid, seedLocalId, areaName, now){
+  const queue = [[String(seedUid), seedLocalId]];
+  const seen = new Set([String(seedUid)]);
+  let anchored = 0;
+  while(queue.length && anchored < 500){
+    const [uid, localId] = queue.shift();
+    const gexits = new Map(gaardianExitsOf(areaid, localId));
+    if(!gexits.size) continue;
     for(const [dir, toUid] of liveExitsOf(uid)){
       const target = String(toUid);
-      if(target.startsWith('gaardian:')) continue;    // already the skeleton
-      if(seen.has(target)) continue;
-      const gTarget = bySynthDir.get(dir);
-      if(!gTarget || !String(gTarget).startsWith('gaardian:')) continue;
-      const localId = parseInt(String(gTarget).split(':')[2]);
-      if(isNaN(localId)) continue;
+      if(target.startsWith('gaardian:') || seen.has(target)) continue;
+      const m = gexits.get(dir);
+      if(m == null) continue;
       seen.add(target);
-      promoted++;
-      // Capture the next room's skeleton exits before promoting it, for the
-      // next hop.
-      const nextSynthetic = liveExitsOf(gaardianUid(gaardianAreaid, localId));
-      promoteGaardianRoom(target, gaardianAreaid, localId, areaName, true);
-      queue.push([target, nextSynthetic]);
+      if(anchoredLocalId(target, areaid) != null) continue;   // already known
+      recordAnchor(target, areaid, m, areaName, now);
+      anchored++;
+      queue.push([target, m]);
     }
   }
-  return promoted;
+  return anchored;
 }
 
-export function promoteGaardianRoom(aardwolfUid, gaardianAreaid, gaardianLocalId, aardwolfAreaName, noPropagate){
+export function promoteGaardianRoom(aardwolfUid, gaardianAreaid, gaardianLocalId, aardwolfAreaName){
   if(!sqlDb) return;
   const oldUid = gaardianUid(gaardianAreaid, gaardianLocalId);
-  // Read the skeleton's exits before the merge below deletes them: they are the
-  // only record of which Gaardian room each live neighbour corresponds to.
-  const synthetic = liveExitsOf(oldUid);
   try {
     // Merge Gaardian-preloaded room into the real Aardwolf room record.
     sqlDb.run("UPDATE OR IGNORE rooms SET uid=? WHERE uid=?", [aardwolfUid, oldUid]);
@@ -498,11 +505,6 @@ export function promoteGaardianRoom(aardwolfUid, gaardianAreaid, gaardianLocalId
     // to_uid is not part of the key, so this one cannot conflict.
     sqlDb.run("UPDATE exits SET to_uid=? WHERE to_uid=?", [aardwolfUid, oldUid]);
   } catch(e){ console.error('promoteGaardianRoom error', e); }
-  // Join the live graph to the imported one, not just at this single room.
-  if(!noPropagate){
-    const n = propagatePromotion(aardwolfUid, synthetic, gaardianAreaid, aardwolfAreaName);
-    if(n) console.log('[map] aligned', n, 'room(s) with the live graph');
-  }
 }
 
 // Areas whose Gaardian data is already in the local database. Backed by a table
@@ -526,25 +528,230 @@ function markAreaImported(gaardianAreaid){
   } catch(e){ /* not fatal */ }
 }
 
-/**
- * Pick the Gaardian twin whose exits match the ones GMCP just reported.
- *
- * Room names repeat: Aardington Estate has twelve rooms called "Path around the
- * manor". Matching on name alone picks an arbitrary one, and since a promotion
- * rewires that room's edges, a wrong pick corrupts the graph -- the walk starts,
- * then dies with "lost the route". The set of exit directions is a much stronger
- * fingerprint and costs one query.
- */
+// =============================================================================
+// ROOM IDENTITY
+// =============================================================================
+//
+// Matching a live Aardwolf room to its room in the Gaardian map is the hard part
+// of using an imported map, because neither of the obvious keys identifies a
+// room:
+//
+//   - Names repeat. Only 10,740 of the 22,362 Gaardian rooms (48%) have a name
+//     unique within their own area. Aardington Estate alone has twelve called
+//     "Path around the manor" and eight called "Catacombs".
+//   - GMCP `coord` is the AREA's position on the world map, not the room's:
+//     every room in the estate reports {x:38, y:25}, the same value `room.area`
+//     carries. Verified against three different rooms.
+//
+// What does identify a room is the shape of the graph around it. GMCP publishes
+// exits as {direction: neighbour-uid}, so every edge is a constraint tying two
+// rooms together. So identification is constraint propagation: hold a SET of
+// candidates per room, shrink it using every edge whose other end is known, and
+// commit only when a set collapses to exactly one.
+//
+// Committing early is what breaks the map. Promotion rewrites a room's edges, so
+// a wrong guess is unrecoverable and surfaces much later as a walk that sets off
+// in the wrong direction. When nothing is conclusive we store the set and wait:
+// the next room the player walks into usually settles it.
+
 const DIR_OF_TYPE = {0:'n', 1:'e', 2:'s', 3:'w', 4:'u', 5:'d'};
 
+/** [[dir, to_local_id], ...] for a Gaardian room, same-area compass exits only. */
 function gaardianExitsOf(areaid, localId){
   try {
     const e = gaardianDb.exec(
-      'SELECT exit_type, to_room FROM exits WHERE areaid=? AND from_room=?', [areaid, localId]);
+      `SELECT exit_type, to_room FROM exits
+        WHERE areaid=? AND from_room=?
+          AND (target_areaid IS NULL OR target_areaid=0 OR target_areaid=?)
+          AND (random IS NULL OR random=0)`,
+      [areaid, localId, areaid]);
     return (e[0]?.values || [])
       .map(([t, to]) => [DIR_OF_TYPE[t], to])
-      .filter(([d]) => d);
+      .filter(([d, to]) => d && to != null);
   } catch(e){ return []; }
+}
+
+function gaardianRoomName(areaid, localId){
+  try {
+    const r = gaardianDb.exec(
+      'SELECT roomname FROM rooms WHERE areaid=? AND local_id=?', [areaid, localId]);
+    return (r.length && r[0].values.length) ? r[0].values[0][0] : '';
+  } catch(e){ return ''; }
+}
+
+function getCandidates(uid, areaid){
+  try {
+    const r = sqlDb.exec(
+      'SELECT local_id FROM room_candidates WHERE uid=? AND areaid=?', [String(uid), areaid]);
+    return r.length ? r[0].values.map(v => v[0]) : [];
+  } catch(e){ return []; }
+}
+
+function putCandidates(uid, areaid, ids){
+  try {
+    sqlDb.run('DELETE FROM room_candidates WHERE uid=? AND areaid=?', [String(uid), areaid]);
+    for(const id of ids){
+      sqlDb.run('INSERT OR IGNORE INTO room_candidates(uid, areaid, local_id) VALUES (?,?,?)',
+        [String(uid), areaid, id]);
+    }
+  } catch(e){ /* candidates are an optimisation, never load-bearing */ }
+}
+
+function clearCandidates(uid){
+  try { sqlDb.run('DELETE FROM room_candidates WHERE uid=?', [String(uid)]); } catch(e){}
+}
+
+/** Every Gaardian room in this area with this name. */
+function roomsNamed(areaid, roomName){
+  try {
+    const r = gaardianDb.exec(
+      'SELECT local_id FROM rooms WHERE areaid=? AND roomname=? COLLATE NOCASE', [areaid, roomName]);
+    return r.length ? r[0].values.map(v => v[0]) : [];
+  } catch(e){ return []; }
+}
+
+/** What we currently believe about a live room: [L] if anchored, else its set. */
+function knownIds(uid, areaid){
+  const a = anchoredLocalId(uid, areaid);
+  if(a != null) return [a];
+  return getCandidates(uid, areaid);
+}
+
+/** Record a certain identification and merge the skeleton room into the live one. */
+function recordAnchor(uid, areaid, localId, areaName, now){
+  try {
+    sqlDb.run(`INSERT OR REPLACE INTO room_gaardian_map
+      (aardwolf_uid, gaardian_areaid, gaardian_local_id, gaardian_name, matched_at)
+      VALUES (?,?,?,?,?)`,
+      [String(uid), areaid, localId, gaardianRoomName(areaid, localId), now || new Date().toISOString()]);
+  } catch(e){ /* the map row is a record, the promotion below is the effect */ }
+  clearCandidates(uid);
+  promoteGaardianRoom(String(uid), areaid, localId, areaName);
+}
+
+/**
+ * Shrink a room's candidate set using every edge whose other end we know.
+ *
+ * Four constraints, applied in order of strength. Each only narrows -- a
+ * constraint that would empty the set is treated as unreliable and skipped,
+ * because GMCP omits closed exits and the imported data is not perfect.
+ */
+function narrowCandidates(uid, areaid, roomName, liveExits){
+  const already = anchoredLocalId(uid, areaid);
+  if(already != null) return [already];
+
+  let ids = getCandidates(uid, areaid);
+  if(!ids.length) ids = roomsNamed(areaid, roomName);
+  if(ids.length <= 1) return ids;
+
+  // Outbound edges, from GMCP and from anything already stored for this room.
+  const out = new Map();
+  if(liveExits){
+    for(const [d, u] of Object.entries(liveExits)){
+      if(u && String(u) !== '0' && String(u) !== '?') out.set(d, String(u));
+    }
+  }
+  for(const [d, u] of liveExitsOf(uid)) if(!out.has(d)) out.set(d, String(u));
+
+  const shrink = hits => { if(hits.length && hits.length < ids.length) ids = hits; };
+
+  // 1. Going `dir` from here reaches a room we know: keep candidates whose own
+  //    `dir` exit lands on one of that room's possibilities.
+  for(const [dir, nbUid] of out){
+    if(ids.length === 1) break;
+    if(nbUid.startsWith('gaardian:')) continue;
+    const allow = new Set(knownIds(nbUid, areaid));
+    if(!allow.size) continue;
+    shrink(ids.filter(L => gaardianExitsOf(areaid, L).some(([d, to]) => d === dir && allow.has(to))));
+  }
+
+  // 2. The same in reverse: some room we know says `dir` leads here.
+  if(ids.length > 1){
+    let inbound = [];
+    try {
+      const r = sqlDb.exec(
+        "SELECT from_uid, dir FROM exits WHERE to_uid=? AND from_uid NOT LIKE 'gaardian:%'",
+        [String(uid)]);
+      inbound = r.length ? r[0].values : [];
+    } catch(e){ /* no inbound edges recorded yet */ }
+    for(const [fromUid, dir] of inbound){
+      if(ids.length === 1) break;
+      const fromIds = knownIds(String(fromUid), areaid);
+      if(!fromIds.length) continue;
+      const allow = new Set();
+      for(const L of fromIds){
+        for(const [d, to] of gaardianExitsOf(areaid, L)) if(d === dir) allow.add(to);
+      }
+      if(!allow.size) continue;
+      shrink(ids.filter(i => allow.has(i)));
+    }
+  }
+
+  // 3. A neighbour we have never anchored but whose NAME we know from having
+  //    stood in it. This is the common case when you walk in from next door.
+  if(ids.length > 1){
+    for(const [dir, nbUid] of out){
+      if(ids.length === 1) break;
+      if(nbUid.startsWith('gaardian:')) continue;
+      let nbName = null;
+      try {
+        const r = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [nbUid]);
+        if(r.length && r[0].values.length) nbName = String(r[0].values[0][0] || '').toLowerCase();
+      } catch(e){ /* neighbour not seen yet */ }
+      if(!nbName) continue;
+      shrink(ids.filter(L => gaardianExitsOf(areaid, L).some(([d, to]) =>
+        d === dir && String(gaardianRoomName(areaid, to)).toLowerCase() === nbName)));
+    }
+  }
+
+  // 4. Weakest: the set of exit directions. GMCP hides closed doors, so this can
+  //    legitimately disagree -- hence shrink(), which ignores an empty result.
+  if(ids.length > 1 && out.size){
+    const want = [...out.keys()].sort().join(',');
+    shrink(ids.filter(L => {
+      const have = [...new Set(gaardianExitsOf(areaid, L).map(([d]) => d))].sort().join(',');
+      return have === want;
+    }));
+  }
+
+  return ids;
+}
+
+/**
+ * Re-run narrowing over every still-ambiguous room in the area.
+ *
+ * Anchoring one room is new information for its neighbours, and for their
+ * neighbours in turn. A few rounds of this is ordinary arc consistency and it is
+ * what lets a single certain room resolve a whole corridor of identical ones.
+ */
+function reconcileArea(areaid, areaName, now){
+  for(let round = 0; round < 4; round++){
+    let changed = false;
+    let uids = [];
+    try {
+      const r = sqlDb.exec('SELECT DISTINCT uid FROM room_candidates WHERE areaid=?', [areaid]);
+      uids = r.length ? r[0].values.map(v => String(v[0])) : [];
+    } catch(e){ return; }
+    if(!uids.length) return;
+    for(const uid of uids){
+      let name = '';
+      try {
+        const r = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [uid]);
+        if(r.length && r[0].values.length) name = String(r[0].values[0][0] || '');
+      } catch(e){ continue; }
+      const before = getCandidates(uid, areaid).length;
+      const ids = narrowCandidates(uid, areaid, name, null);
+      if(ids.length === 1){
+        recordAnchor(uid, areaid, ids[0], areaName, now);
+        cascadeAnchors(uid, areaid, ids[0], areaName, now);
+        changed = true;
+      } else if(ids.length && ids.length < before){
+        putCandidates(uid, areaid, ids);
+        changed = true;
+      }
+    }
+    if(!changed) return;
+  }
 }
 
 /** local_id of a live room we have already anchored, or null. */
@@ -557,86 +764,7 @@ function anchoredLocalId(uid, areaid){
   } catch(e){ return null; }
 }
 
-/**
- * Which Gaardian room is this live room? Answer only when it is certain.
- *
- * GMCP's `coord` cannot help: it reports the AREA's position on the world map,
- * so every room in Aardington Estate reports {x:38, y:25} -- verified against
- * three different rooms. Room names are not unique either; this area has twelve
- * called "Path around the manor".
- *
- * Three signals, strongest first. A guess here is worse than no answer at all:
- * promoting rewrites that room's edges, so one wrong pick corrupts the graph and
- * the walk dies with "lost the route". When nothing is conclusive we anchor
- * nothing and let the skeleton stand until the player reaches a room we can
- * identify.
- */
-function identifyRoom(areaid, roomName, liveDirs, liveExits){
-  if(!gaardianDb) return null;
-  let ids;
-  try {
-    const res = gaardianDb.exec(
-      'SELECT local_id FROM rooms WHERE areaid=? AND roomname=? COLLATE NOCASE', [areaid, roomName]);
-    ids = (res[0]?.values || []).map(r => r[0]);
-  } catch(e){ return null; }
-  if(!ids.length) return null;
-  if(ids.length === 1) return ids[0];            // the name is unique: done
-
-  // 1. A neighbour we have already anchored pins this room exactly: if going
-  //    `dir` from here reaches live room U, and U is Gaardian room M, then this
-  //    room is whichever candidate has an exit `dir` to M.
-  if(liveExits){
-    for(const [dir, toUid] of Object.entries(liveExits)){
-      const nb = anchoredLocalId(toUid, areaid);
-      if(nb == null) continue;
-      const hits = ids.filter(id => gaardianExitsOf(areaid, id).some(([d, to]) => d === dir && to === nb));
-      if(hits.length === 1) return hits[0];
-    }
-  }
-
-  // 2. A neighbour we merely know the NAME of still pins this room, and that is
-  //    the common case: you arrive from a room you were just standing in. For
-  //    each live exit, ask which candidates have that direction leading to a
-  //    Gaardian room of that name, and intersect. Only 48% of Aardwolf rooms
-  //    have a name unique within their area, so this carries most of the load.
-  if(liveExits){
-    let narrowed = ids;
-    for(const [dir, toUid] of Object.entries(liveExits)){
-      let nbName = null;
-      try {
-        const r = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [String(toUid)]);
-        if(r.length && r[0].values.length) nbName = String(r[0].values[0][0] || '');
-      } catch(e){ /* neighbour not seen yet */ }
-      if(!nbName) continue;
-      const hits = narrowed.filter(id =>
-        gaardianExitsOf(areaid, id).some(([d, to]) => {
-          if(d !== dir) return false;
-          try {
-            const g = gaardianDb.exec(
-              'SELECT roomname FROM rooms WHERE areaid=? AND local_id=?', [areaid, to]);
-            return g.length && g[0].values.length
-              && String(g[0].values[0][0]).toLowerCase() === nbName.toLowerCase();
-          } catch(e){ return false; }
-        }));
-      if(hits.length){ narrowed = hits; }
-      if(narrowed.length === 1) return narrowed[0];
-    }
-  }
-
-  // 3. Otherwise the set of exit directions, if it happens to be unique.
-  if(liveDirs && liveDirs.length){
-    const want = [...new Set(liveDirs)].sort().join(',');
-    const hits = ids.filter(id => {
-      const have = [...new Set(gaardianExitsOf(areaid, id).map(([d]) => d))].sort().join(',');
-      return have === want;
-    });
-    if(hits.length === 1) return hits[0];
-  }
-
-  return null;   // ambiguous: refuse to guess
-}
-
-export function matchAardwolfToGaardian(uid, area, name, now, liveDirs, liveExits){
+export function matchAardwolfToGaardian(uid, area, name, now, liveExits){
   if(!sqlDb) return null;
   const gaardianRoom = lookupGaardianRoom(area, name);
   if(!gaardianRoom) return null;
@@ -649,18 +777,24 @@ export function matchAardwolfToGaardian(uid, area, name, now, liveDirs, liveExit
     importGaardianArea(gaardianRoom.areaid, area);
   }
 
-  const certain = identifyRoom(gaardianRoom.areaid, name, liveDirs, liveExits);
-  if(certain == null){
-    // Ambiguous. Leave the skeleton alone rather than rewiring a room's edges on
-    // a coin flip -- a wrong promotion is unrecoverable and shows up much later
-    // as a walk that starts off in the wrong direction.
-    return gaardianRoom;
+  const areaid = gaardianRoom.areaid;
+  const known = anchoredLocalId(uid, areaid);
+  if(known != null){ gaardianRoom.local_id = known; return gaardianRoom; }
+
+  const ids = narrowCandidates(uid, areaid, name, liveExits);
+  if(ids.length === 1){
+    gaardianRoom.local_id = ids[0];
+    recordAnchor(uid, areaid, ids[0], area, now);
+    // One certain room resolves everything reachable from it, and that in turn
+    // is new evidence for rooms still holding a candidate set.
+    cascadeAnchors(uid, areaid, ids[0], area, now);
+    reconcileArea(areaid, area, now);
+  } else {
+    // Still ambiguous: remember what is still possible instead of guessing. The
+    // next room walked into normally settles it, and reconcileArea will pick
+    // this room up then.
+    putCandidates(uid, areaid, ids);
   }
-  gaardianRoom.local_id = certain;
-  sqlDb.run(`INSERT OR REPLACE INTO room_gaardian_map
-    (aardwolf_uid, gaardian_areaid, gaardian_local_id, gaardian_name, matched_at)
-    VALUES (?,?,?,?,?)`, [uid, gaardianRoom.areaid, gaardianRoom.local_id, gaardianRoom.roomname, now]);
-  promoteGaardianRoom(uid, gaardianRoom.areaid, gaardianRoom.local_id, area);
   return gaardianRoom;
 }
 
