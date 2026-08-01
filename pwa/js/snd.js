@@ -1,6 +1,6 @@
 // snd.js -- extracted from index.html
 
-import { findAreaAnywhere, gaardianDb, resolveRoomByNameAnywhere, sqlDb } from './db.js';
+import { canonicalArea, findAreaAnywhere, gaardianDb, resolveRoomByNameAnywhere, sqlDb } from './db.js';
 import { currentRoom, charState, charLevel, STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
 import { findPath, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo } from './nav.js';
@@ -238,9 +238,14 @@ export function resolveRoomsByName(roomName, areaName){
     res=sqlDb.exec(
       // A room you have actually stood in beats a Gaardian placeholder of the
       // same name: its uid is the one the live exit graph refers to.
-      "SELECT uid, name, area FROM rooms WHERE name LIKE ? AND (area LIKE ? OR ? LIKE area||'%')"
+      // Also match on the canonical keyword. "The Land of Oz" is stored as
+      // 'landofoz', which neither LIKE test can reach -- the display name is not
+      // a prefix of the keyword or the other way round -- so a room that was
+      // sitting one step away was missed and a stale gaardian: uid returned.
+      "SELECT uid, name, area FROM rooms WHERE name LIKE ?"
+      + " AND (area LIKE ? OR ? LIKE area||'%' OR area=?)"
       + " ORDER BY (uid LIKE 'gaardian:%')",
-      ['%'+roomName+'%', '%'+areaName+'%', areaName.toLowerCase()]);
+      ['%'+roomName+'%', '%'+areaName+'%', areaName.toLowerCase(), canonicalArea(areaName)]);
   } else {
     res=sqlDb.exec("SELECT uid, name, area FROM rooms WHERE name LIKE ?", ['%'+roomName+'%']);
   }
@@ -588,12 +593,24 @@ export function xcpStep(t){
   // where only works inside the target area, so this is required for reliable routing.
   // We skip recall when currentRoom.area matches the target area (avoids recalling out of the area).
   // Use a broader check that also tolerates short area prompts like [hedge] vs Hedgehogs' Paradise.
+  // canonicalArea first: GMCP gives the keyword ('landofoz') and the campaign
+  // the display name ('The Land of Oz'), and neither substring test can bridge
+  // those. The looser tests stay for areas we have not learned a keyword for.
   const alreadyInArea=currentRoom.area && (
+    canonicalArea(t.areaName) === canonicalArea(currentRoom.area) ||
     t.areaName.toLowerCase().includes(currentRoom.area.toLowerCase()) ||
     currentRoom.area.toLowerCase().includes(t.areaName.toLowerCase()) ||
     areaNameMatches(t.areaName, currentRoom.area)
   );
-  if(t.areaUid && !t.recallSent && !alreadyInArea){
+  // Travel is gated on knowing the AREA NAME, not on `areaUid`. areaUid is only
+  // set once the area exists in the local map, so for an area never visited the
+  // target stayed type 'unknown', step 1 was skipped entirely, and the helper
+  // went straight to `where` -- which only works inside the target area. That is
+  // why the Cowardly Lion needed a manual `rec` and `rt oz` first: the client
+  // never recalled or ran anywhere, it just asked `where` from the wrong side of
+  // the world. The keyword comes from lookupArea(t.areaName), which needs no
+  // local map at all.
+  if(t.areaName && !t.recallSent && !alreadyInArea){
     const area=lookupArea(t.areaName);
     if(!area){
       appendOutput('[S&D] no runto keyword for "'+t.areaName+'"; skipping this target.\n','error');

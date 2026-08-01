@@ -265,6 +265,12 @@ function step(){
     const available = (currentRoom.exits || []).map(d => String(d).toLowerCase());
     if(available.length && !available.includes(dir.toLowerCase()) && !walk.opened){
       walk.opened = true;
+      // Record the edge we are attempting BEFORE sending, so that "There is no
+      // door <dir> from here" can delete the right one. Without this, lastDir
+      // still held the previous step's direction and the reply was blamed on
+      // whichever edge we last walked.
+      walk.lastFrom = currentRoom.uid;
+      walk.lastDir = dir;
       appendOutput('[nav] ' + dir + ' is not open here; trying "open ' + dir + '"\n','system');
       sendCmdRaw('open ' + dir);
       clearStepTimer();
@@ -345,6 +351,13 @@ export function onRoomChanged(){
 const BLOCKED = [
   {re:/^There is no exit in that direction/im,      msg:'no exit that way', deadEnd:true},
   {re:/^Alas, you cannot go that way/im,            msg:'cannot go that way', deadEnd:true},
+  // The reply to a speculative `open <dir>`. It is NOT evidence that the exit is
+  // fake: Behind the Screen in The Land of Oz answers this for its west exit,
+  // which Gaardian records as a real door and which the room description says is
+  // opened by a handle rather than by `open`. Deleting the edge here threw away
+  // the only route to the target. Say nothing and let the pending step try the
+  // direction; if that fails, "cannot go that way" removes it properly.
+  {re:/^There is no door\b.*\bhere\b/im,            msg:null, ignore:true},
   {re:/^The door is closed/im,                      msg:null, open:true},
   {re:/is closed\.$/im,                             msg:null, open:true},
   {re:/^The door is locked/im,                      msg:'the door is locked', locked:true},
@@ -386,6 +399,8 @@ export function onMudText(text){
       walk.timer = setTimeout(step, 800);
       return;
     }
+    // Informational only: a step is already scheduled, let it run.
+    if(b.ignore) return;
     if(b.locked) reportKeyFor(walk.lastFrom, walk.lastDir);
     if(b.stand){ sendCmdRaw('stand'); clearStepTimer(); walk.timer = setTimeout(step, 800); return; }
     if(b.retry){ clearStepTimer(); walk.timer = setTimeout(step, 1200); return; }

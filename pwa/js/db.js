@@ -284,7 +284,17 @@ export function resolveRoomByNameAnywhere(roomName, areaName){
       if(res.length && res[0].values.length){
         const [areaid, local_id]=res[0].values[0];
         importGaardianArea(areaid, areaName || findAreaAnywhereById(areaid));
-        const uid=gaardianUid(areaid, local_id);
+        // That Gaardian room may already have been merged into a live one, in
+        // which case the synthetic uid no longer exists and pathing to it fails.
+        // Seen in The Land of Oz: the target was returned as gaardian:94:45
+        // while the room itself was uid 583, one step west of where we stood.
+        let uid=gaardianUid(areaid, local_id);
+        try {
+          const promoted=sqlDb.exec(
+            'SELECT aardwolf_uid FROM room_gaardian_map WHERE gaardian_areaid=? AND gaardian_local_id=?',
+            [areaid, local_id]);
+          if(promoted.length && promoted[0].values.length) uid=String(promoted[0].values[0][0]);
+        } catch(e){ /* keep the synthetic uid */ }
         const name=res[0].values[0][2];
         return {uid, name, area: areaName || findAreaAnywhereById(areaid)};
       }

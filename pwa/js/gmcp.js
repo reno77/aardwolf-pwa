@@ -1,6 +1,6 @@
 // gmcp.js -- extracted from index.html
 
-import { matchAardwolfToGaardian, mergeAreaAliases, persistDb, sqlDb } from './db.js';
+import { canonicalArea, matchAardwolfToGaardian, mergeAreaAliases, persistDb, sqlDb } from './db.js';
 import { renderRooms, onRoomChanged } from './nav.js';
 import { noticeTravelProgress, sndState, xcpStep } from './snd.js';
 import { appendOutput, stripAnsi } from './ui.js';
@@ -142,7 +142,13 @@ export function processGMCP(key, data){
     // Still moving: push the runto deadline back rather than cutting a long
     // speedwalk off part way.
     noticeTravelProgress();
-    if(sndState.xcpAwaitingArea && area && (area.toLowerCase().includes(sndState.xcpAwaitingArea) || sndState.xcpAwaitingArea.includes(area.toLowerCase()))){
+    // Compare canonically. GMCP reports the keyword ('landofoz') while the
+    // campaign gives the display name ('The Land of Oz'), and neither contains
+    // the other -- so arriving in Oz never cleared the wait and the runto
+    // watchdog announced "stopped moving before reaching The Land of Oz" while
+    // standing in it.
+    const awaitKey = sndState.xcpAwaitingArea ? canonicalArea(sndState.xcpAwaitingArea) : null;
+    if(awaitKey && area && canonicalArea(area) === awaitKey){
       sndState.xcpAwaitingArea=null;
       sndState.xcpAwaitingStart=null;
       if(sndState.xcpAwaitingTimer){ clearTimeout(sndState.xcpAwaitingTimer); sndState.xcpAwaitingTimer=null; }
