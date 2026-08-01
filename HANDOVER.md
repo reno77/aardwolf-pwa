@@ -462,6 +462,28 @@ systemctl --user restart aardwolf-bridge.service
 `Restart=always` covers the gateway address changing across reboots, since the
 bridge resolves it at startup.
 
+**WSL will not stay up on its own.** WSL2 tears the whole VM down once no
+Windows process is attached to it, and that takes `cloudflared` and
+`aardwolf-bridge.service` with it. The symptom is Cloudflare **error 1033**
+("unable to resolve the origin") while the Windows relay on :8765 is perfectly
+healthy -- and it looks intermittent, because any `wsl ...` command boots the VM
+again and the site works for as long as you keep poking it.
+
+`wsl -l -v` is the check; it reports state without starting anything:
+
+```
+wsl -l -v            # Ubuntu-22.04 must say Running, not Stopped
+```
+
+Held open by `wsl-keepalive.vbs` in the per-user Startup folder
+(`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`), which runs
+`wsl -d Ubuntu-22.04 -- sleep infinity` hidden at logon. Delete the file to
+undo. A scheduled task would be tidier but needs admin.
+
+The real fix is to stop involving WSL at all: run `cloudflared` on Windows
+against `http://localhost:8765` and drop both the bridge and the keepalive.
+Nothing else in the chain needs WSL any more.
+
 **Diagnosing "the site is down".** Work along the chain; the useful test is
 whether the public URL serves a file that only exists in the new checkout:
 
