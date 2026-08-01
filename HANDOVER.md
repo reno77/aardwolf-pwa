@@ -440,14 +440,39 @@ WSL's `127.0.0.1:8765` and relays to the Windows host (the WSL default gateway,
 e.g. `172.29.160.1`, resolved at startup because it changes across reboots).
 It is a plain TCP relay, so the WebSocket upgrade passes through fine.
 
-Two things that will bite you:
+Both of the traps this section used to warn about have now been closed, because
+both of them actually fired after a crash — the site came back up serving the
+*old* WSL checkout, which reads as "the site is down" since none of the current
+behaviour is there:
 
-- `aardwolf-relay.service` is still **enabled**, so it starts on next boot and
-  takes WSL's 8765 back, and the bridge then fails to bind. Either
-  `systemctl --user disable aardwolf-relay.service`, or point that unit at this
-  checkout and drop the Windows relay and bridge entirely.
-- The bridge started with `nohup` does not survive a reboot or `wsl --shutdown`.
-  Make it a systemd user unit if you want it permanent.
+- `aardwolf-relay.service` was still enabled, so it restarted on boot and took
+  WSL's 8765 back. It is now **stopped and disabled**
+  (`systemctl --user disable aardwolf-relay.service`). If you ever want to go
+  back to serving from inside WSL, re-enable it *and* disable the bridge below —
+  they both want port 8765.
+- The bridge was started with `nohup` and did not survive a reboot. It is now a
+  systemd user unit, `~/.config/systemd/user/aardwolf-bridge.service`, enabled
+  with lingering on, so it comes back by itself:
+
+```
+systemctl --user status  aardwolf-bridge.service
+systemctl --user restart aardwolf-bridge.service
+```
+
+`Restart=always` covers the gateway address changing across reboots, since the
+bridge resolves it at startup.
+
+**Diagnosing "the site is down".** Work along the chain; the useful test is
+whether the public URL serves a file that only exists in the new checkout:
+
+```
+curl -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8765/            # Windows relay
+wsl -- ss -ltn | grep 8765                                              # bridge listening
+curl -o /dev/null -w '%{http_code}\n' https://mud.bedok77.win/static/js/buttons.js
+```
+
+502 from Cloudflare means nothing is listening on WSL's 8765 (bridge down).
+A 200 on `/` but 530/404 on `buttons.js` means the *old* WSL relay has the port.
 
 Simpler alternative: keep running the relay inside WSL and just update the WSL
 checkout to this code. Then no bridge is involved at all.
