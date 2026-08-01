@@ -282,14 +282,51 @@ export function findAreaAnywhereById(gaardianAreaid){
   return (res.length && res[0].values.length)?res[0].values[0][0].toLowerCase():null;
 }
 
+/**
+ * The one name an area's rooms are stored under.
+ *
+ * `rooms.area` was written from whatever string the caller happened to hold:
+ * GMCP's zone ("aardington") when walking in, but the campaign/Gaardian display
+ * name ("aardington estate") when a room was resolved by name. The same area
+ * then existed twice, so picking it in the map dropdown showed half its rooms
+ * and the room you were standing in was often in the other half -- visible only
+ * under "All Areas".
+ *
+ * GMCP's zone wins, because that is what live room.info writes and what
+ * `runto` takes. `areas(name, key)` is populated from room.area (see gmcp.js).
+ */
+export function canonicalArea(name){
+  const n = String(name || '').trim().toLowerCase();
+  if(!n || !sqlDb) return n;
+  try {
+    const r = sqlDb.exec('SELECT key FROM areas WHERE name=? OR key=? LIMIT 1', [n, n]);
+    const key = (r.length && r[0].values.length) ? r[0].values[0][0] : null;
+    return key ? String(key).toLowerCase() : n;
+  } catch(e){ return n; }
+}
+
+/** Fold rooms stored under an area's display name onto its canonical key. */
+export function mergeAreaAliases(displayName, key){
+  if(!sqlDb) return 0;
+  const from = String(displayName || '').trim().toLowerCase();
+  const to = String(key || '').trim().toLowerCase();
+  if(!from || !to || from === to) return 0;
+  try {
+    const r = sqlDb.exec('SELECT COUNT(*) FROM rooms WHERE area=?', [from]);
+    const n = r.length ? r[0].values[0][0] : 0;
+    if(n) sqlDb.run('UPDATE rooms SET area=? WHERE area=?', [to, from]);
+    return n;
+  } catch(e){ return 0; }
+}
+
 export function importGaardianArea(gaardianAreaid, aardwolfAreaName){
   if(!sqlDb || !gaardianDb || !gaardianAreaid) return 0;
   try {
-    let areaName = (aardwolfAreaName || '').toLowerCase();
+    let areaName = canonicalArea(aardwolfAreaName || '');
     if(!areaName){
       const areaRes=gaardianDb.exec('SELECT areaname FROM areas WHERE areaid=?', [gaardianAreaid]);
       if(areaRes.length && areaRes[0].values.length){
-        areaName=String(areaRes[0].values[0][0]).toLowerCase();
+        areaName=canonicalArea(String(areaRes[0].values[0][0]));
       } else {
         return 0;
       }
@@ -490,7 +527,7 @@ export function promoteGaardianRoom(aardwolfUid, gaardianAreaid, gaardianLocalId
     sqlDb.run("UPDATE OR IGNORE rooms SET uid=? WHERE uid=?", [aardwolfUid, oldUid]);
     // Ensure the promoted room uses the Aardwolf area name
     if(aardwolfAreaName){
-      sqlDb.run("UPDATE rooms SET area=? WHERE uid=?", [aardwolfAreaName.toLowerCase(), aardwolfUid]);
+      sqlDb.run("UPDATE rooms SET area=? WHERE uid=?", [canonicalArea(aardwolfAreaName), aardwolfUid]);
     }
     // If the old uid row still exists (because real uid already existed), delete the synthetic one.
     sqlDb.run("DELETE FROM rooms WHERE uid=?", [oldUid]);

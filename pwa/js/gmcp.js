@@ -1,6 +1,6 @@
 // gmcp.js -- extracted from index.html
 
-import { matchAardwolfToGaardian, persistDb, sqlDb } from './db.js';
+import { matchAardwolfToGaardian, mergeAreaAliases, persistDb, sqlDb } from './db.js';
 import { renderRooms, onRoomChanged } from './nav.js';
 import { sndState, xcpStep } from './snd.js';
 import { appendOutput, stripAnsi } from './ui.js';
@@ -155,6 +155,13 @@ export function processGMCP(key, data){
       if(id && nm){
         sqlDb.run(`INSERT INTO areas(name, key) VALUES (?,?)
                    ON CONFLICT(name) DO UPDATE SET key=excluded.key`, [nm, id]);
+        // Learning the keyword also lets us repair rooms already stored under the
+        // display name. The same area used to be imported twice -- once as
+        // 'aardington' from room.info.zone, once as 'aardington estate' from a
+        // campaign lookup -- so picking either in the map dropdown showed only
+        // half of it, and the room you were in was frequently in the other half.
+        const moved = mergeAreaAliases(nm, id);
+        if(moved) appendOutput(`[map] merged ${moved} room(s) from "${nm}" into "${id}"\n`, 'system');
       }
     } catch(e){ /* areas table is best-effort */ }
   }

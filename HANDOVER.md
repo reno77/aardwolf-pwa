@@ -204,6 +204,24 @@ it into `areas(name, key)`. Walking anywhere now teaches the client that area's
 `runto` keyword for free — no `areas <n> <m> keywords` harvest, and no falling
 back to the first-word guess (which yields `aardi`, not `aardington`).
 
+### One area, one name
+
+`rooms.area` used to be written from whatever string the caller happened to
+hold: GMCP's zone (`aardington`) when walking in, but the display name
+(`aardington estate`) when a room was resolved by name for a campaign. The same
+area was then imported **twice under two names**, so the map dropdown listed both
+and picking either showed only half the rooms — with the room you were standing
+in frequently in the other half. It looked right only under "All Areas".
+
+`canonicalArea()` resolves any area string to the GMCP keyword via
+`areas(name, key)`, and every write of `rooms.area` goes through it.
+`mergeAreaAliases()` folds already-split rows together, and `room.area` calls it
+on arrival, so an existing database repairs itself as you walk.
+
+The map's **"All Areas"** option is gone. It drew all 22k rooms across 269
+unconnected areas onto one sheet, and it was the default. The dropdown now
+follows the room you are in; picking an area pins it until the map is reopened.
+
 ### Room identity: which Gaardian room is this?
 
 The hard part of using an imported map. Neither obvious key works:

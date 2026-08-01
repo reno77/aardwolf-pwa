@@ -20,7 +20,12 @@ export let mapRenderScale=1;
 // =============================================================================
 // MAP
 // =============================================================================
+// Which area the user has explicitly selected in the dropdown, if any. Cleared
+// when the map is opened so it always starts on the room you are standing in.
+let mapAreaPinned=null;
+
 export function showFullMap(){
+  mapAreaPinned=null;
   document.getElementById('fullmap').classList.add('show');
   drawFullMap();
   attachMapHandlers();
@@ -45,15 +50,26 @@ export function computeMapState(){
   let resetPan=false;
   if(areaSelect){
     const prev=areaSelect.value;
-    areaSelect.innerHTML='<option value="">All Areas</option>';
-    const areasRes=sqlDb.exec("SELECT DISTINCT area FROM rooms ORDER BY area");
+    // No "All Areas" option. It drew every room in the database onto one sheet --
+    // 22k rooms across 269 unconnected areas -- which was unreadable, and it was
+    // also the default, so opening the map did the most expensive possible thing.
+    areaSelect.innerHTML='';
+    const areasRes=sqlDb.exec("SELECT DISTINCT area FROM rooms WHERE area IS NOT NULL AND area!='' ORDER BY area");
     const areas=(areasRes[0]?.values||[]).map(r=>r[0]).filter(Boolean);
     for(const a of areas){
       const opt=document.createElement('option'); opt.value=a; opt.textContent=a;
-      if(a===prev) opt.selected=true;
       areaSelect.appendChild(opt);
     }
-    areaSelect.onchange=()=>{ mapOffsetX=0; mapOffsetY=0; mapZoom=1; drawFullMap(); };
+    // Follow the player unless they have picked an area themselves since the map
+    // was opened; showFullMap clears the pin so it re-centres each time.
+    const want=(mapAreaPinned && areas.includes(mapAreaPinned)) ? mapAreaPinned
+             : (areas.includes(currentRoom.area) ? currentRoom.area : (areas[0]||''));
+    if(want) areaSelect.value=want;
+    areaSelect.onchange=()=>{
+      mapAreaPinned=areaSelect.value;
+      mapOffsetX=0; mapOffsetY=0; mapZoom=1;
+      drawFullMap();
+    };
     if(prev!==(areaSelect.value||'')) resetPan=true;
   }
   if(resetPan){ mapOffsetX=0; mapOffsetY=0; mapZoom=1; }
