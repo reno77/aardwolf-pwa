@@ -7,6 +7,7 @@ Aardwolf Relay Server v12
 - No auto-login on server (client sends credentials)
 """
 import asyncio, aiohttp, json, re, sqlite3
+import socket
 from aiohttp import web
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +53,16 @@ class MudRelay:
                 self.reader, self.writer = await asyncio.wait_for(
                     asyncio.open_connection(MUD_HOST, MUD_PORT), timeout=10
                 )
+                # Disable Nagle. A MUD sends tiny writes (a movement command is
+                # two bytes) and Nagle will sit on them waiting for more data or
+                # for the previous ACK, adding tens of milliseconds to every
+                # keystroke on an already ~300ms round trip.
+                try:
+                    sock = self.writer.get_extra_info('socket')
+                    if sock is not None:
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception:
+                    pass
                 self.mud_running = True
                 asyncio.create_task(self._mud_reader())
                 await self._setup_telnet()
@@ -306,18 +317,42 @@ async def ws_handler(request):
                 relay.disconnect_mud()
     return ws
 
+# Browsers refuse an ES module served as anything but a JavaScript MIME type,
+# and Python's mimetypes reads the Windows registry, where .js is often
+# text/plain. Pin the types we care about rather than trusting the lookup.
+CONTENT_TYPES = {
+    '.js':   'application/javascript; charset=utf-8',
+    '.mjs':  'application/javascript; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.css':  'text/css; charset=utf-8',
+    '.db':   'application/octet-stream',
+}
+
+def serve(relpath):
+    """FileResponse for PWA_DIR/relpath, no-cache, correct Content-Type."""
+    full = (PWA_DIR / relpath).resolve()
+    # Refuse anything that escapes PWA_DIR.
+    if not full.is_file() or PWA_DIR.resolve() not in full.parents:
+        return web.Response(text="Not found", status=404)
+    resp = web.FileResponse(full)
+    ctype = CONTENT_TYPES.get(full.suffix.lower())
+    if ctype:
+        resp.headers['Content-Type'] = ctype
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    return resp
+
 async def index_handler(request):
-    file_path = PWA_DIR / 'index.html'
-    if file_path.exists():
-        return web.FileResponse(file_path)
-    return web.Response(text="PWA not found", status=404)
+    return serve('index.html')
 
 async def static_handler(request):
     path = request.match_info.get('path', '')
-    file_path = PWA_DIR / path
-    if file_path.exists() and file_path.is_file():
-        return web.FileResponse(file_path)
-    return web.Response(text="Not found", status=404)
+    # relay_minimal serves the PWA under /static; accept both spellings so the
+    # same index.html works against either relay.
+    if path.startswith('static/'):
+        path = path[len('static/'):]
+    return serve(path)
 
 async def main():
     app = web.Application()

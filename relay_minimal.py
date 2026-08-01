@@ -6,8 +6,28 @@ Aardwolf Minimal Relay v14
 - Forwards bytes + parses GMCP for client
 """
 import asyncio, aiohttp, json, re
+import socket
 from aiohttp import web
 from pathlib import Path
+import os
+
+# Debug logging is opt-in. These used to be unconditional writes to hard-coded
+# /tmp paths, which raise FileNotFoundError on Windows -- and one of them sat
+# inside the MUD read loop, so the connection died the moment the first byte
+# arrived. Set RELAY_DEBUG_DIR=<dir> to turn logging back on.
+DEBUG_DIR = os.environ.get('RELAY_DEBUG_DIR')
+
+
+def dbglog(name, data):
+    if not DEBUG_DIR:
+        return
+    try:
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        mode = 'ab' if isinstance(data, (bytes, bytearray)) else 'a'
+        with open(os.path.join(DEBUG_DIR, name), mode) as f:
+            f.write(data)
+    except Exception:
+        pass   # debug logging must never break the relay
 
 MUD_HOST, MUD_PORT = "aardwolf.org", 4000
 PORT = 8765
@@ -23,7 +43,8 @@ class MinimalRelay:
         self.reader = None
         self.writer = None
         self.mud_running = False
-        self.ws_clients = set()
+        self.ws_clients = {}      # ws -> outbound asyncio.Queue
+        self._writers = {}       # ws -> writer task
         self.mud_lock = asyncio.Lock()
         self.gmcp_negotiated = False
         self.handshake_sent = False
@@ -37,6 +58,16 @@ class MinimalRelay:
                 self.reader, self.writer = await asyncio.wait_for(
                     asyncio.open_connection(MUD_HOST, MUD_PORT), timeout=10
                 )
+                # Disable Nagle. A MUD sends tiny writes (a movement command is
+                # two bytes) and Nagle will sit on them waiting for more data or
+                # for the previous ACK, adding tens of milliseconds to every
+                # keystroke on an already ~300ms round trip.
+                try:
+                    sock = self.writer.get_extra_info('socket')
+                    if sock is not None:
+                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception:
+                    pass
                 self.mud_running = True
                 self.gmcp_negotiated = False
                 self.handshake_sent = False
@@ -76,16 +107,51 @@ class MinimalRelay:
                 self.writer = None
             self.reader = None
 
+    # Outbound queue depth per client. Enough to ride out a brief stall; a client
+    # further behind than this is not keeping up and gets dropped rather than
+    # allowed to hold the session back.
+    SEND_QUEUE_MAX = 500
+
     def broadcast(self, msg):
+        """Queue a message for every client, in order.
+
+        This used to be `asyncio.create_task(ws.send_str(data))` per client per
+        message: unbounded, unordered, and with no way to notice a client that
+        had gone away. Each MUD chunk spawned a task, they completed in whatever
+        order the loop got to them, and sockets that were never cleanly closed
+        stayed in the set forever -- so output arrived later and later, and
+        eventually out of order. One queue and one writer task per client keeps
+        delivery ordered and lets a dead client be dropped.
+        """
         data = json.dumps(msg)
-        dead = []
-        for ws in list(self.ws_clients):
+        for ws, q in list(self.ws_clients.items()):
             try:
-                asyncio.create_task(ws.send_str(data))
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.ws_clients.discard(ws)
+                q.put_nowait(data)
+            except asyncio.QueueFull:
+                self._drop_client(ws)
+
+    def _drop_client(self, ws):
+        entry = self.ws_clients.pop(ws, None)
+        if entry is not None:
+            task = self._writers.pop(ws, None)
+            if task is not None:
+                task.cancel()
+
+    async def _client_writer(self, ws, q):
+        """Drain one client's queue in order, and stop the moment it fails."""
+        try:
+            while True:
+                data = await q.get()
+                if ws.closed:
+                    break
+                await ws.send_str(data)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            self.ws_clients.pop(ws, None)
+            self._writers.pop(ws, None)
 
     async def _send_handshake(self):
         if not self.writer or self.handshake_sent:
@@ -102,13 +168,24 @@ class MinimalRelay:
         await self.writer.drain()
         await asyncio.sleep(0.2)
         # After enabling modules, request full state (same sequence as MUSHclient package)
-        for req in [b'request char', b'request room', b'request area', b'request quest', b'request group']:
+        await self.request_gmcp_state()
+        dbglog('relay_iac.log', 'HANDSHAKE SENT\n')
+        self.broadcast({'type':'system','text':'GMCP handshake sent'})
+
+    async def request_gmcp_state(self):
+        """Ask the MUD to re-send the full GMCP state.
+
+        Aardwolf only pushes room.info on a room change, so a client that logs
+        in after the TCP handshake has no idea where it is until it moves. The
+        client calls this once it is actually in the game.
+        """
+        if not self.writer or not self.mud_running:
+            return
+        for req in [b'request char', b'request room', b'request area',
+                    b'request quest', b'request group']:
             self.writer.write(IAC + SB + GMCP + req + IAC + SE)
             await self.writer.drain()
             await asyncio.sleep(0.05)
-        with open('/tmp/relay_iac.log','a') as f:
-            f.write('HANDSHAKE SENT\n')
-        self.broadcast({'type':'system','text':'GMCP handshake sent'})
 
     async def _mud_read_loop(self):
         buf = b''
@@ -117,8 +194,7 @@ class MinimalRelay:
                 chunk = await self.reader.read(4096)
                 if not chunk:
                     break
-                with open('/tmp/relay_raw.log','ab') as f:
-                    f.write(b'RAW[' + str(len(chunk)).encode() + b'] ' + chunk + b'\n')
+                dbglog('relay_raw.log', b'RAW[' + str(len(chunk)).encode() + b'] ' + chunk + b'\n')
                 buf += chunk
                 while True:
                     iac_pos = buf.find(IAC)
@@ -137,15 +213,13 @@ class MinimalRelay:
                         if len(buf) < 3:
                             break
                         opt = buf[2]
-                        with open('/tmp/relay_iac.log','a') as f:
-                            f.write(f'IAC recv cmd={cmd} opt={opt}\n')
+                        dbglog('relay_iac.log', f'IAC recv cmd={cmd} opt={opt}\n')
                         if cmd == 251 and opt == 201:
                             # Server offers GMCP: accept it
                             self.writer.write(bytes([255, 253, 201]))
                             await self.writer.drain()
                             self.gmcp_negotiated = True
-                            with open('/tmp/relay_iac.log','a') as f:
-                                f.write(' -> sent DO GMCP\n')
+                            dbglog('relay_iac.log', ' -> sent DO GMCP\n')
                             asyncio.create_task(self._send_handshake())
                         elif cmd == 253 and opt == 201:
                             # Server asks us to enable GMCP: confirm with DO
@@ -195,8 +269,7 @@ class MinimalRelay:
                         if not complete:
                             break
                         if sub_type == 201:
-                            with open('/tmp/relay_gmcp.log','ab') as f:
-                                f.write(b'GMCP_RAW ' + bytes(payload) + b'\n')
+                            dbglog('relay_gmcp.log', b'GMCP_RAW ' + bytes(payload) + b'\n')
                             self._handle_gmcp(bytes(payload))
                         buf = buf[i:]
                     elif cmd in (241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255):
@@ -236,8 +309,7 @@ class MinimalRelay:
                 else:
                     val = stripped
             except Exception as e:
-                with open('/tmp/relay_gmcp_parse_err.log','a') as f:
-                    f.write(f'Parse err: {e} pkg={pkg} payload={payload[:200]}\n')
+                dbglog('relay_gmcp_parse_err.log', f'Parse err: {e} pkg={pkg} payload={payload[:200]}\n')
                 val = {}
         if pkg.startswith('char.'):
             self.char_seen = True
@@ -248,7 +320,9 @@ class MinimalRelay:
     async def ws_handler(self, request):
         ws = web.WebSocketResponse(heartbeat=25.0)
         await ws.prepare(request)
-        self.ws_clients.add(ws)
+        q = asyncio.Queue(maxsize=self.SEND_QUEUE_MAX)
+        self.ws_clients[ws] = q
+        self._writers[ws] = asyncio.create_task(self._client_writer(ws, q))
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -260,13 +334,31 @@ class MinimalRelay:
                     if action == 'connect':
                         # If MUD already connected, just reuse it; don't churn the session
                         if self.mud_running and self.writer:
-                            await ws.send_str(json.dumps({'type':'system','text':'Connected to Aardwolf'}))
+                            await ws.send_str(json.dumps({'type':'system','text':'Reattached to the existing Aardwolf session'}))
+                            # A reattaching client has missed everything sent so
+                            # far and the MUD will not redraw on its own, so the
+                            # screen just sits empty and looks broken. Ask for
+                            # the GMCP state and nudge out a prompt so the client
+                            # immediately knows where it is.
+                            await self.request_gmcp_state()
+                            try:
+                                self.writer.write(b'\n')
+                                await self.writer.drain()
+                            except Exception:
+                                pass
                             continue
                         ok = await self.ensure_mud()
                         await ws.send_str(json.dumps({'type':'system','text':'Connected to Aardwolf' if ok else 'Connection failed'}))
                         continue
                     elif action == 'ping':
                         await ws.send_str(json.dumps({'type': 'pong'}))
+                    elif action == 'gmcp_request':
+                        # The handshake requests full GMCP state when the TCP
+                        # session opens, which is before the player has logged
+                        # in -- so no room.info ever arrives for a session that
+                        # logs in afterwards. The client asks again once it is
+                        # actually in the game.
+                        await self.request_gmcp_state()
                     elif 'cmd' in d:
                         cmd = d['cmd']
                         if self.writer and self.mud_running:
@@ -276,34 +368,51 @@ class MinimalRelay:
         except Exception as e:
             print(f'WS error: {e}')
         finally:
-            self.ws_clients.discard(ws)
+            self._drop_client(ws)
         return ws
 
 relay = MinimalRelay()
 
-async def index(request):
-    resp = web.FileResponse(str(PWA_DIR / 'index.html'))
+# Browsers refuse an ES module served as anything but a JavaScript MIME type,
+# and Python's mimetypes reads the Windows registry, where .js is often
+# text/plain. Pin the types we care about rather than trusting the lookup.
+CONTENT_TYPES = {
+    '.js':   'application/javascript; charset=utf-8',
+    '.mjs':  'application/javascript; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.css':  'text/css; charset=utf-8',
+    '.db':   'application/octet-stream',
+}
+
+def serve(relpath):
+    """FileResponse for PWA_DIR/relpath, no-cache, correct Content-Type."""
+    full = (PWA_DIR / relpath).resolve()
+    # Refuse anything that escapes PWA_DIR.
+    if not full.is_file() or PWA_DIR.resolve() not in full.parents:
+        return web.Response(text='Not found', status=404)
+    resp = web.FileResponse(full)
+    ctype = CONTENT_TYPES.get(full.suffix.lower())
+    if ctype:
+        resp.headers['Content-Type'] = ctype
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     resp.headers['Pragma'] = 'no-cache'
     return resp
+
+async def index(request):
+    return serve('index.html')
+
+async def static_file(request):
+    return serve(request.match_info['filename'])
+
+async def gaardian_db(request):
+    return serve('gaardian_maps.db')
 
 app = web.Application()
 app.router.add_get('/', index)
 app.router.add_get('/ws', relay.ws_handler)
-app.router.add_get('/gaardian_maps.db', lambda r: web.FileResponse(str(PWA_DIR / 'gaardian_maps.db')))
-app.router.add_static('/static', str(PWA_DIR), name='static')
-
-# Ensure static files are not cached either
-async def no_cache_static(request):
-    filepath = request.match_info['filename']
-    full = str(PWA_DIR / filepath)
-    resp = web.FileResponse(full)
-    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-    resp.headers['Pragma'] = 'no-cache'
-    return resp
-
-app.router.add_get('/static/{filename:.*}', no_cache_static)
-app.router.add_get('/gaardian_maps.db', no_cache_static)
+app.router.add_get('/gaardian_maps.db', gaardian_db)
+app.router.add_get('/static/{filename:.*}', static_file)
 
 if __name__ == '__main__':
     web.run_app(app, host='0.0.0.0', port=PORT, print=False)

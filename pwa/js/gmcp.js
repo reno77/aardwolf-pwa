@@ -1,0 +1,181 @@
+// gmcp.js -- extracted from index.html
+
+import { matchAardwolfToGaardian, persistDb, sqlDb } from './db.js';
+import { renderRooms, onRoomChanged } from './nav.js';
+import { sndState, xcpStep } from './snd.js';
+import { appendOutput, stripAnsi } from './ui.js';
+// --- state owned by this module ---
+export let currentRoom={name:'Unknown',area:'',exits:[]};
+
+// Character state from GMCP char.status (see the char.status branch below).
+export let charState = 3;    // 3 == "active and ready"
+export let charLevel = 1;
+export let charTier  = 0;
+
+export const STATE_READY = 3;
+export const STATE_FIGHTING = 8;
+export const STATE_SLEEPING = 9;
+export const STATE_RESTING = 11;
+export const STATE_RUNNING = 12;
+
+// Grid convention, matching map.js dirDelta: north is -y, east is +x, up is +z.
+// Offsets to get from a NEIGHBOUR back to the room that has an exit `dir`
+// leading to it -- i.e. the inverse of each direction.
+const BACK_FROM_NEIGHBOUR = {
+  n: [0,  1, 0],
+  s: [0, -1, 0],
+  e: [-1, 0, 0],
+  w: [ 1, 0, 0],
+  u: [0, 0, -1],
+  d: [0, 0,  1],
+};
+
+/** Effective level for exit level-gates; portals get the tier bonus. */
+export function effectiveLevel(){ return charLevel + charTier * 10; }
+
+// nav.js registers here so a state change can wake a paused walk without
+// gmcp.js importing nav.js (which would close an import cycle at module level).
+let charStateListener = null;
+export function onCharStateChange(fn){ charStateListener = fn; }
+function onCharState(st){
+  if(charStateListener){ try { charStateListener(st); } catch(e){ console.error(e); } }
+}
+
+// =============================================================================
+// GMCP ROOM MAPPING (SQLite)
+// =============================================================================
+export function processGMCP(key, data){
+  if(key==='room.info' && sqlDb){
+    let uid=String(data.num||data.id||'');
+    if(!uid || uid==='0') return;
+    const name=stripAnsi(data.name||'');
+    const area=stripAnsi(data.zone||data.area||'');
+    const terrain=data.terrain||'';
+    // Aardwolf reports num == -1 for unmappable ("nomap") rooms -- clan halls,
+    // some quest rooms. The mapper synthesises a stable text uid from name+area
+    // instead of dropping them; uid is TEXT so this needs no schema change.
+    // Rooms sharing a name within an area do collapse into one node.
+    if(uid==='-1') uid='nomap_'+name+'_'+area;
+    // Aardwolf does NOT send reliable coord.x/y/z in GMCP.
+    // Build our own coordinates from the exit graph.
+    let x=0, y=0, z=0;
+    try{
+      const existing=sqlDb.exec("SELECT x,y,z FROM rooms WHERE uid=?",[uid]);
+      if(existing.length && existing[0].values.length){
+        x=existing[0].values[0][0]||0;
+        y=existing[0].values[0][1]||0;
+        z=existing[0].values[0][2]||0;
+      } else {
+        const exits=data.exits||{};
+        for(const [dir,toUid] of Object.entries(exits)){
+          if(!toUid || toUid==='0') continue;
+          const neighbor=sqlDb.exec("SELECT x,y,z FROM rooms WHERE uid=?",[toUid]);
+          if(neighbor.length && neighbor[0].values.length){
+            const nx=neighbor[0].values[0][0]||0;
+            const ny=neighbor[0].values[0][1]||0;
+            const nz=neighbor[0].values[0][2]||0;
+            // `dir` points from THIS room to the neighbour, so this room sits
+            // on the OPPOSITE side of it: the offset is the inverse of the
+            // direction's own delta. Written as a table because the previous
+            // hand-written branches had e/w right but n/s inverted, which
+            // mirrored every live-mapped area about the horizontal axis --
+            // walking north placed the new room below the one you came from.
+            const back=BACK_FROM_NEIGHBOUR[dir];
+            if(!back) continue;
+            x=nx+back[0]; y=ny+back[1]; z=nz+back[2];
+            break;
+          }
+        }
+      }
+    }catch(e){}
+    const exits=data.exits||{};
+    const exitStr=Object.keys(exits).join(':');
+    const now=new Date().toISOString();
+    // room.info.details is a comma-separated flag list (pk, shop, bank, healer,
+    // quest, trainer, maze). The walker reads 'maze' to switch strategy.
+    const info=String(data.details||'');
+    // Upsert room
+    sqlDb.run(`INSERT OR REPLACE INTO rooms(uid, area, name, terrain, info, x, y, z, exits, last_visited)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`, [uid, area, name, terrain, info, x, y, z, exitStr, now]);
+    // First seen
+    const existing = sqlDb.exec("SELECT first_seen FROM rooms WHERE uid=?", [uid]);
+    if(!existing.length || !existing[0].values[0][0]){
+      sqlDb.run("UPDATE rooms SET first_seen=? WHERE uid=?", [now, uid]);
+    }
+    // Store exits. GMCP only ever publishes n/e/s/w/u/d and only the ones that
+    // are currently open, so this never overwrites an imported custom exit.
+    for(const [dir, toUid] of Object.entries(exits)){
+      if(toUid && toUid!=='0' && toUid!=='?'){
+        sqlDb.run(`INSERT OR REPLACE INTO exits(from_uid, dir, to_uid)
+          VALUES (?,?,?)`, [uid, dir, String(toUid)]);
+      }
+    }
+    // Cross-reference with Gaardian map database and import the whole area
+    const gaardianRoom = matchAardwolfToGaardian(uid, area, name, now);
+    if (gaardianRoom) {
+      // If Gaardian has coordinates and we don't, inherit them (scaled to local grid)
+      try {
+        const existingXY = sqlDb.exec("SELECT x,y FROM rooms WHERE uid=?", [uid]);
+        const hasXY = existingXY.length && existingXY[0].values.length && (existingXY[0].values[0][0] !== 0 || existingXY[0].values[0][1] !== 0);
+        if (!hasXY) {
+          sqlDb.run("UPDATE rooms SET x=?, y=? WHERE uid=?", [gaardianRoom.xpos, gaardianRoom.ypos, uid]);
+        }
+      } catch(e) {}
+    }
+    // Update UI
+    currentRoom={name, area, info, exits: Object.keys(exits), uid: uid};
+    document.getElementById('room-name').textContent=(name||'Unknown') + (area?' ['+area+']':'');
+    document.getElementById('room-area').textContent='';
+    // Confirm/advance an in-flight walk. room.info is pushed on every room
+    // change, which makes it the reliable "did that move land?" signal.
+    onRoomChanged();
+    // If xcp is waiting for arrival in this area, resume
+    if(sndState.xcpAwaitingArea && area && (area.toLowerCase().includes(sndState.xcpAwaitingArea) || sndState.xcpAwaitingArea.includes(area.toLowerCase()))){
+      sndState.xcpAwaitingArea=null;
+      if(sndState.xcpAwaitingTimer){ clearTimeout(sndState.xcpAwaitingTimer); sndState.xcpAwaitingTimer=null; }
+      if(sndState.pendingXcp) xcpStep(sndState.pendingXcp);
+    }
+    // Persist
+    persistDb();
+    // Update room list if visible
+    if(document.getElementById('panel-rooms').classList.contains('show')) renderRooms();
+  }
+  if(key==='char.vitals'){
+    const hp=data.hp||'', maxhp=data.maxhp||'', mn=data.mana||'', maxmn=data.maxmana||'', mv=data.move||'', maxmv=data.maxmove||'';
+    let vitalText='';
+    if(hp&&maxhp) vitalText+=hp+'/'+maxhp+'hp ';
+    if(mn&&maxmn) vitalText+=mn+'/'+maxmn+'mn ';
+    if(mv&&maxmv) vitalText+=mv+'/'+maxmv+'mv';
+    if(vitalText){
+      document.getElementById('room-name').textContent=(currentRoom.name||'Unknown')+' ('+vitalText.trim()+')';
+    }
+  }
+  if(key==='char.status'){
+    // Aardwolf char.status.state, per the GMCP spec:
+    //   1,2 logging in   3 ready   4 AFK   5 note   6 building   7 paged
+    //   8 fighting       9 sleeping   11 resting/sitting   12 running
+    // The walker needs this: stepping while fighting or mid-speedwalk is how a
+    // path desynchronises. Previously the whole message was discarded.
+    const st = parseInt(data.state);
+    if(!isNaN(st)){
+      charState = st;
+      onCharState(st);
+    }
+    // char.status carries level but NOT tier -- see the char.base branch below.
+    const lv = parseInt(data.level);
+    if(!isNaN(lv)) charLevel = lv;
+  }
+  if(key==='char.base'){
+    // Tier only ever arrives here. Reading it from char.status left charTier at
+    // 0 forever, which understated the wearable-level cap by 10 levels per tier
+    // -- a tier 5 character was told they could wear 50 levels less than they
+    // actually can. Confirmed live: char.base = {..., "tier":5, "level":71}.
+    const tier = parseInt(data.tier);
+    if(!isNaN(tier)) charTier = tier;
+    const lv = parseInt(data.level);
+    if(!isNaN(lv)) charLevel = lv;
+  }
+  if(key==='comm.quest'){
+    appendOutput('Quest update: '+JSON.stringify(data)+'\n','quest');
+  }
+}
