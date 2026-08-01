@@ -321,6 +321,7 @@ export function parseCpCheckOutput(text){
     const m=clean.match(/^\s*You\s+still\s+have\s+to\s+kill\s+\*\s+(.+?)\s+\((.+?)(\s*-\s*Dead)?\)\s*$/i);
     if(m){
       if(!sndState._inCpCheck){ sndState._inCpCheck=true; sndState._cpCheckTmp=[]; }
+      sndState._cpCheckSawKill=true;
       const dead=!!m[3];
       const loc=m[2].trim();
       sndState._cpCheckTmp.push({mob:m[1].trim(), loc:loc, is_dead:dead});
@@ -329,10 +330,15 @@ export function parseCpCheckOutput(text){
     // When every target is dead, `cp check` prints no "still have to kill" lines
     // at all -- only the timer. Without this the block never closed, so a
     // finished campaign was never shown as finished.
-    if(!sndState._inCpCheck && campaignTargets.length
-       && /left to finish this campaign/i.test(clean)){
-      mergeCpCheck([]);
-      continue;
+    if(/left to finish this campaign/i.test(clean)){
+      // Only a reply we asked for, and only one that listed nothing, means the
+      // campaign is finished. Without the _cpCheckSawKill guard this fired on
+      // the tail of a perfectly normal reply whose kill lines arrived in an
+      // earlier chunk, and marked every remaining target dead.
+      const finished = sndState._cpCheckExpecting && !sndState._cpCheckSawKill
+                       && !sndState._inCpCheck && campaignTargets.length;
+      sndState._cpCheckExpecting=false;
+      if(finished){ mergeCpCheck([]); continue; }
     }
     if(sndState._inCpCheck){
       sndState._inCpCheck=false;
@@ -1266,6 +1272,11 @@ export function parseWhereOutput(text){
        || /^<MAPEND>/i.test(line)){ inBlock=false; continue; }
     if(inBlock) continue;
     if(line.startsWith('{') || line.startsWith('<')) continue;
+    // The room's exit list and the status prompt both start with '[' and are
+    // long enough for the fixed-width split to read as "mob, then room":
+    // `[ Exits: north east south west ]` was reported as a mob. Not a blanket
+    // '[' skip -- Aardwolf does have mobs whose names start with a bracket.
+    if(/^\[\s*Exits:/i.test(line) || /^\[\d+\/\d+hp\b/i.test(line)) continue;
     // Skip echo of the command itself and informational/no-match lines.
     if(/^where\s/i.test(line)) continue;
     if(/There is no|around here|can't find any|no such/i.test(line)){
@@ -1723,5 +1734,14 @@ export function doQuickWhere(mob){
 }
 
 export function doCpInfo(){ sendCmd('cp info'); }
-export function doCpCheck(){ sendCmd('cp check'); }
+export function doCpCheck(){
+  // Arm the "everything is dead" detection for THIS reply only. See
+  // parseCpCheckOutput: the timer line is the only marker of a campaign with no
+  // targets left, but it also ends an ordinary reply, and MUD output arrives in
+  // arbitrary chunks -- so when the kill lines and the timer landed in separate
+  // chunks the timer was read as "no targets" and wiped the whole list.
+  sndState._cpCheckExpecting = true;
+  sndState._cpCheckSawKill = false;
+  sendCmd('cp check');
+}
 export function refreshCampaign(){ togglePanel('campaign'); doCpCheck(); }
