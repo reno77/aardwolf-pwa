@@ -111,7 +111,9 @@ export function processGMCP(key, data){
       }
     }
     // Cross-reference with Gaardian map database and import the whole area
-    const gaardianRoom = matchAardwolfToGaardian(uid, area, name, now);
+    // Pass the exits GMCP just reported so a repeated room name can be told
+    // apart from its twins by fingerprint rather than picked arbitrarily.
+    const gaardianRoom = matchAardwolfToGaardian(uid, area, name, now, Object.keys(exits), exits);
     if (gaardianRoom) {
       // If Gaardian has coordinates and we don't, inherit them (scaled to local grid)
       try {
@@ -139,6 +141,22 @@ export function processGMCP(key, data){
     persistDb();
     // Update room list if visible
     if(document.getElementById('panel-rooms').classList.contains('show')) renderRooms();
+  }
+  if(key==='room.area' && sqlDb){
+    // room.area is an authoritative keyword -> display-name pair, pushed on every
+    // area change: {"id":"aardington","name":"Aardington Estate"}. `id` is exactly
+    // what `runto`/`rt` wants, so walking anywhere teaches us that area's keyword
+    // for free -- no `areas <n> <m> keywords` harvest, and no guessing from the
+    // first word (which collides for 54 of the 269 areas: `land` alone matches
+    // Land of Legend, ...Beer Goblins and ...of Oz).
+    try {
+      const id = String(data.id || '').trim().toLowerCase();
+      const nm = stripAnsi(String(data.name || '')).trim().toLowerCase();
+      if(id && nm){
+        sqlDb.run(`INSERT INTO areas(name, key) VALUES (?,?)
+                   ON CONFLICT(name) DO UPDATE SET key=excluded.key`, [nm, id]);
+      }
+    } catch(e){ /* areas table is best-effort */ }
   }
   if(key==='char.vitals'){
     const hp=data.hp||'', maxhp=data.maxhp||'', mn=data.mana||'', maxmn=data.maxmana||'', mv=data.move||'', maxmv=data.maxmove||'';

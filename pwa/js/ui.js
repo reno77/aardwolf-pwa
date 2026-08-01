@@ -369,10 +369,13 @@ export function deleteTriggerEdit(){
 // PANEL NAVIGATION
 // =============================================================================
 export function togglePanel(name){
-  const panels=['rooms','aliases','triggers','campaign','settings'];
+  const panels=['rooms','aliases','triggers','campaign'];   // the swipe cycle
+  const all=[...panels,'settings','inventory'];
   const idx=panels.indexOf(name);
-  swipePanelState=Math.min(idx,3); // settings not in swipe cycle
-  for(const p of panels){ document.getElementById('panel-'+p).classList.remove('show'); }
+  if(idx>=0) swipePanelState=idx;   // settings/inventory are outside the cycle
+  // Hide every panel, not just the swipeable ones -- inventory was absent from
+  // this list, so opening another panel left it showing on top of the new one.
+  for(const p of all){ const el=document.getElementById('panel-'+p); if(el) el.classList.remove('show'); }
   document.getElementById('panel-'+name).classList.add('show');
   if(name==='rooms') renderRooms();
   if(name==='aliases') renderAliases();

@@ -21,6 +21,7 @@ import { renderRooms } from './nav.js';
 import { showFullMap, hideFullMap } from './map.js';
 import { xcpNext, refreshCampaign } from './snd.js';
 import { dinvCommand, buildInventory, renderInventory } from './dinv.js';
+import { initButtons } from './buttons.js';
 import './joystick.js';
 
 Object.assign(window, {
@@ -43,8 +44,11 @@ Object.assign(window, {
 // INIT
 // =============================================================================
 initDb().then(()=>{
+  // Needs sqlDb, so it cannot run at module load.
+  initButtons();
   appendOutput('AardClient Local (SQLite)\n','system');
   appendOutput('All data stored in browser.\n','system');
   appendOutput('Swipe: rooms → aliases → triggers\n','system');
+  appendOutput('Shortcut row: tap to send, hold to edit, + to add\n','system');
   appendOutput('Commands: /runto, /aliases, /triggers, /rooms, /map, /cpinfo, /cpcheck, /xcp, /xcpmode, /ht, /qw, /export, /import\n','system');
 });

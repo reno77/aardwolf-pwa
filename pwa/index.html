@@ -73,11 +73,33 @@
 
   /* === BOTTOM UI - COMPACT === */
   #bottomui{flex-shrink:0;border-top:1px solid var(--accent);background:var(--panel);}
-  #bottomrow{display:flex;align-items:center;gap:3px;padding:4px 6px;overflow-x:auto;scrollbar-width:none;}
-  #bottomrow button{padding:6px 8px;font-size:11px;background:var(--accent);border:none;color:var(--text);border-radius:4px;white-space:nowrap;}
-  #bottomrow button.dir{background:var(--blue);color:#fff;font-weight:bold;}
-  #bottomrow button.combat{background:var(--red);color:#fff;}
-  #bottomrow button.heal{background:rgba(46,204,113,.2);color:var(--green);}
+  #bottomrow-wrap{display:flex;align-items:center;gap:3px;padding:4px 6px;}
+  #bottomrow{display:flex;align-items:center;gap:3px;overflow-x:auto;scrollbar-width:none;flex:1;min-width:0;}
+  #bottomrow::-webkit-scrollbar{display:none;}
+  /* Pinned: never scrolls out of reach, and not user-editable. */
+  #bottomrow-fixed{display:flex;align-items:center;gap:3px;flex-shrink:0;padding-left:5px;border-left:1px solid var(--accent);}
+  #bottomrow-wrap button{padding:6px 8px;font-size:11px;background:var(--accent);border:none;color:var(--text);border-radius:4px;white-space:nowrap;}
+  #bottomrow-wrap button.dir{background:var(--blue);color:#fff;font-weight:bold;}
+  #bottomrow-wrap button.combat{background:var(--red);color:#fff;}
+  #bottomrow-wrap button.heal{background:rgba(46,204,113,.2);color:var(--green);}
+  /* Long-press to edit: suppress the platform text-selection / callout gesture,
+     and shrink the button while it is held so the hold is visibly doing something. */
+  #bottomrow button{touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;transition:transform .12s ease,opacity .12s ease;}
+  #bottomrow button.pressing{transform:scale(.88);opacity:.6;}
+  #btn-add{background:var(--blue)!important;color:#fff!important;font-weight:bold;}
+
+  /* === BUTTON EDITOR === */
+  #btn-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.92);z-index:45;display:none;align-items:center;justify-content:center;}
+  #btn-overlay.show{display:flex;}
+  #btn-box{background:var(--panel);padding:20px;border-radius:10px;width:min(320px,90%);border:1px solid var(--accent);}
+  #btn-box h3{margin:0 0 12px;color:var(--blue);}
+  #btn-box label{display:block;margin:8px 0 3px;font-size:12px;color:var(--muted);}
+  #btn-box input,#btn-box select{width:100%;padding:8px;background:var(--bg);border:1px solid var(--accent);color:var(--text);border-radius:4px;box-sizing:border-box;font-size:14px;}
+  #btn-box .hint{font-size:11px;color:var(--muted);margin-top:6px;}
+  #btn-box .row{display:flex;gap:8px;margin-top:14px;}
+  #btn-box .row button{flex:1;padding:8px;border:none;border-radius:4px;background:var(--green);color:#000;font-weight:bold;font-size:13px;}
+  #btn-box .row button.cancel{background:var(--accent);color:var(--text);}
+  #btn-box .row button.del{background:var(--red);color:#fff;}
   #inputrow{display:flex;gap:4px;padding:6px;border-top:1px solid var(--accent);}
   #inputrow input{flex:1;padding:8px 10px;background:var(--bg);border:1px solid var(--accent);color:var(--text);border-radius:20px;font-size:14px;}
   #inputrow button{padding:8px 14px;background:var(--green);color:#000;border:none;border-radius:20px;font-weight:bold;}
@@ -128,6 +150,32 @@
   </div>
 </div>
 
+<!-- SHORTCUT BUTTON EDITOR (long-press a button, or tap +) -->
+<div id="btn-overlay">
+  <div id="btn-box">
+    <h3 id="btn-ed-title">Edit Button</h3>
+    <label>Label</label>
+    <input type="text" id="btn-ed-label" placeholder="Mb" maxlength="12" autocomplete="off">
+    <label>Command</label>
+    <input type="text" id="btn-ed-cmd" placeholder="attmarbu" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <label>Colour</label>
+    <select id="btn-ed-cls">
+      <option value="">Default</option>
+      <option value="combat">Combat (red)</option>
+      <option value="heal">Heal (green)</option>
+      <option value="dir">Highlight (blue)</option>
+    </select>
+    <label>Position <span id="btn-ed-pos-of" style="color:var(--muted);"></span></label>
+    <input type="number" id="btn-ed-pos" min="1" step="1" inputmode="numeric">
+    <div class="hint">Position 1 is the left end of the row. Aliases work in the command box, and <code>;</code> separates a sequence — e.g. <code>stand;bless;spellup</code>.</div>
+    <div class="row">
+      <button id="btn-ed-save">Save</button>
+      <button id="btn-ed-del" class="del">Delete</button>
+      <button id="btn-ed-cancel" class="cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- APP -->
 <div id="app" style="flex:1;display:flex;flex-direction:column;min-height:0;">
   <div id="statusbar">
@@ -156,27 +204,18 @@
   </div>
 
   <div id="bottomui">
-    <div id="bottomrow">
-      <button class="combat" onclick="sendCmd('attmarbu')">Mb</button>
-      <button class="combat" onclick="sendCmd('attspi')">Sp</button>
-      <button class="combat" onclick="sendCmd('attgreen')">Gn</button>
-      <button class="combat" onclick="sendCmd('attsweep')">Sw</button>
-      <button class="heal" onclick="sendCmd('heal')">He</button>
-      <button onclick="sendCmd('gc')">GC</button>
-      <button onclick="sendCmd('food')">Fd</button>
-      <button onclick="sendCmd('bless')">Bl</button>
-      <button onclick="sendCmd('spellup')">SpU</button>
-      <button onclick="sendCmd('eqsearch')">Eq</button>
-      <button onclick="sendCmd('rec')">Rc</button>
-      <button onclick="sendCmd('wpn')">Wn</button>
-      <button onclick="sendCmd('wear171')">W1</button>
-      <button onclick="sendCmd('wear200')">W2</button>
-      <button onclick="sendCmd('quest')">Q</button>
-      <button onclick="sendCmd('crr')">CR</button>
-      <button onclick="togglePanel('campaign')">🎯</button>
-      <button onclick="togglePanel('inventory')">🎒</button>
-      <button onclick="togglePanel('settings')">⚙️</button>
+    <!-- #bottomrow is rendered from the `buttons` table by js/buttons.js:
+         tap to send, long-press to edit or delete. The pinned group is panel
+         navigation, not commands, so it stays fixed and non-editable. -->
+    <div id="bottomrow-wrap">
+      <div id="bottomrow"></div>
+      <div id="bottomrow-fixed">
+        <button id="btn-add" title="Add shortcut button">+</button>
+        <button onclick="togglePanel('campaign')">🎯</button>
+        <button onclick="togglePanel('inventory')">🎒</button>
+        <button onclick="togglePanel('settings')">⚙️</button>
       </div>
+    </div>
     <div id="inputrow">
       <input type="text" id="cmd-input" placeholder="Type command or /runto..." onkeydown="if(event.key==='Enter'){event.preventDefault();submitCmd();} if(event.key==='ArrowUp'){event.preventDefault();cmdHistoryUp();} if(event.key==='ArrowDown'){event.preventDefault();cmdHistoryDown();}" style="flex:1;min-width:0;">
       <button onclick="cmdHistoryUp()" style="padding:0 8px;">▲</button>

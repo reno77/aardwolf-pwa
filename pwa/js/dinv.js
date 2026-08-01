@@ -74,11 +74,15 @@ export function initInventory(){
 // the trailing field is the score Aardwolf itself assigns the item -- which is
 // a far better ranking key than anything we could infer from level alone.
 const INVHEADER = /^\{invheader\}(.*)$/i;
+// The game's refusal when the item is not in your hands or on your body.
+const NOT_FOUND = /^Item (\d+) not found\.$/i;
+let scanMisses = 0;
 
 export function parseInvDetails(text){
   if(!sqlDb) return false;
   let hit = false;
   for(const raw of stripAnsi(String(text)).split(/\r?\n/)){
+    if(NOT_FOUND.test(raw.trim())){ scanMisses++; continue; }
     const m = raw.trim().match(INVHEADER);
     if(!m) continue;
     const f = m[1].split('|');
@@ -111,29 +115,74 @@ export function isAardItem(name){ return /\baard(wolf)?\b/i.test(String(name || 
  */
 export function dinvScan(opts){
   if(!sqlDb){ appendOutput('[dinv] no database\n','error'); return; }
-  const onlyNew = !(opts && opts.all);
-  // Do NOT filter by item type. Plenty of worn gear is type 6 (treasure) rather
-  // than armour or weapon -- auras, bracers, a cow bell are all worn on your
-  // character right now -- and excluding those left their slots looking empty
-  // with nothing to recommend. Containers are the only thing worth skipping.
+  const all = !!(opts && opts.all);
+  const here = !!(opts && opts.here);
+  // Do NOT filter by item type for things you are carrying. Plenty of worn gear
+  // is type 6 (treasure) rather than armour or weapon -- auras, bracers, a cow
+  // bell -- and excluding those left their slots looking empty.
   const res = sqlDb.exec(
-    `SELECT objectid FROM items
-      WHERE type != 11` + (onlyNew ? ' AND (scanned IS NULL OR score IS NULL)' : ''));
-  const ids = (res[0]?.values || []).map(r => r[0]);
-  if(!ids.length){ appendOutput('[dinv] nothing left to scan (try "dinv scan all")\n','system'); return; }
-  const secs = Math.ceil(ids.length * 0.45);
-  appendOutput(`[dinv] asking the game about ${ids.length} item(s) -- about ${secs}s\n`,'system');
+    `SELECT objectid, location, type FROM items
+      WHERE type != 11` + (all ? '' : ' AND (scanned IS NULL OR score IS NULL)'));
+  const rows = (res[0]?.values || []).map(r => ({id:r[0], loc:r[1], type:r[2]}));
+  const carried = rows.filter(r => r.loc === 'inv' || r.loc === 'eq');
+  // `invdetails` answers "Item <id> not found." for anything inside a container
+  // -- confirmed live, and the reason stored gear had no wear slot or score and
+  // was invisible to `dinv best`. The only way to ask about it is to take it out
+  // and put it straight back. That is three commands per item, so restrict the
+  // stored pass to types that can occupy a wear slot.
+  const stored = here ? []
+    : rows.filter(r => r.loc !== 'inv' && r.loc !== 'eq' && WEARABLE_TYPES.has(r.type));
+
+  if(!carried.length && !stored.length){
+    appendOutput('[dinv] nothing left to scan (try "dinv scan all")\n','system');
+    return;
+  }
+  scanMisses = 0;
   let delay = 0;
-  for(const id of ids){
-    setTimeout(() => sendCmdRaw('invdetails ' + id), delay);
+  for(const r of carried){
+    setTimeout(() => sendCmdRaw('invdetails ' + r.id), delay);
     delay += 450;
   }
-  setTimeout(() => appendOutput('[dinv] scan finished -- try "dinv best"\n','system'), delay + 800);
+  for(const r of stored){
+    const id = r.id, box = r.loc;
+    setTimeout(() => sendCmdRaw(`get ${id} ${box}`), delay);            delay += 400;
+    setTimeout(() => sendCmdRaw('invdetails ' + id), delay);            delay += 400;
+    setTimeout(() => sendCmdRaw(`put ${id} ${box}`), delay);            delay += 400;
+  }
+  const secs = Math.ceil(delay / 1000);
+  appendOutput(`[dinv] scanning ${carried.length} carried`
+    + (stored.length ? ` and ${stored.length} stored (taken out and put straight back)` : '')
+    + ` -- about ${secs}s\n`, 'system');
+  setTimeout(() => {
+    appendOutput('[dinv] scan finished -- try "dinv best"\n','system');
+    if(scanMisses) appendOutput(`[dinv] ${scanMisses} item(s) the game would not detail; "dinv build" then scan again\n`,'error');
+  }, delay + 1200);
 }
 
+// Slots that hold more than one item at once. Confirmed against live eqdata +
+// invdetails: two ears, two necks, two wrists, two fingers, three medals.
+// Without this, a slot with one of its two places filled looked fully occupied,
+// so a bare second wrist or ring was never offered anything.
+// `wield:2` is dual wield -- the off-hand is for a second weapon, which is also
+// why portals are excluded below. Drop it to 1 for a character without the skill.
+const SLOT_CAPACITY = { ear:2, neck:2, wrist:2, finger:2, medal:3, wield:2 };
+function capacityOf(slot){ return SLOT_CAPACITY[slot] || 1; }
+
+// Item types that are never a sensible recommendation even though the game
+// gives them a wear slot. A portal (type 20) is *held*, and holding one costs
+// you the off-hand a second weapon needs.
+const NEVER_RECOMMEND = new Set([20]);
+
+// Every slot the game can fill. A slot you wear nothing in used to produce no
+// output at all when none of your stored gear was low enough level to use --
+// indistinguishable from the recommender being broken. Now it says so.
+const ALL_SLOTS = ['light','eyes','ear','head','face','neck','back','medal','torso',
+                   'body','arms','hands','wrist','finger','waist','legs','feet',
+                   'shield','wield','second','hold','float','above'];
+
 /**
- * `dinv best` -- for each wear slot, the highest-scoring item you can use,
- * and whether it beats what you have on.
+ * `dinv best` -- the ideal loadout per wear slot from everything you own,
+ * ranked by the game's own item score.
  */
 export function dinvBest(){
   if(!sqlDb) return;
@@ -144,7 +193,7 @@ export function dinvBest(){
   const rows = (res[0]?.values || []).map(r => ({
     objectid:r[0], name:r[1], level:r[2], type:r[3], typeName:ITEM_TYPES[r[3]]||'?',
     location:r[4], flags:r[5], slot:r[6], score:r[7]||0,
-  }));
+  })).filter(i => !NEVER_RECOMMEND.has(i.type) || i.location === 'eq');
   if(!rows.length){ appendOutput('[dinv] no scanned items yet -- run "dinv scan"\n','system'); return; }
 
   const bySlot = {};
@@ -153,29 +202,83 @@ export function dinvBest(){
   appendOutput(`[dinv] level ${charLevel} tier ${charTier} -> usable up to level ${cap}\n`,'system');
   const upgrades = [];
   let emptyFilled = 0;
-  // Slots with nothing worn come first: an empty slot is a bigger win than
-  // swapping a decent piece for a slightly better one, and it is easy to miss.
-  const slots = Object.keys(bySlot).sort((a, b) => {
-    const aEmpty = !bySlot[a].some(i => i.location === 'eq');
-    const bEmpty = !bySlot[b].some(i => i.location === 'eq');
-    return (bEmpty - aEmpty) || a.localeCompare(b);
+  const bare = [];    // slots with a free place and nothing usable to put in it
+
+  // Every slot the game has, not just the ones we happen to hold gear for, so
+  // an empty slot is always accounted for one way or the other.
+  const slots = [...new Set([...ALL_SLOTS, ...Object.keys(bySlot)])].sort((a, b) => {
+    const free = s => capacityOf(s) - (bySlot[s]||[]).filter(i => i.location === 'eq').length;
+    return (free(b) - free(a)) || a.localeCompare(b);   // emptiest first
   });
+
   for(const slot of slots){
-    const worn = bySlot[slot].find(i => i.location === 'eq');
-    const usable = bySlot[slot]
+    const held = bySlot[slot] || [];
+    const room = capacityOf(slot);
+    const worn = held.filter(i => i.location === 'eq')
+                     .sort((a,b) => b.score - a.score);
+    // Rank on the game's own score; prefer Aard gear only to break a tie.
+    const usable = held
       .filter(i => i.level <= cap)
-      // Rank on the game's own score; prefer Aard gear only to break a tie.
       .sort((a,b) => (b.score - a.score) || (isAardItem(b.name) - isAardItem(a.name)) || (b.level - a.level));
-    const best = usable[0];
-    if(!best) continue;
-    const wornScore = worn ? worn.score : -1;
-    const isEmpty = !worn;
-    const mark = (!worn || best.objectid !== worn.objectid) && best.score > wornScore
-      ? (isEmpty ? ' **EMPTY SLOT**' : ' **UPGRADE**') : '';
-    if(mark){ upgrades.push({slot, best, worn}); if(isEmpty) emptyFilled++; }
-    appendOutput(`  ${slot.padEnd(10)} ${String(best.score).padStart(4)}  ${best.name}`
-      + (isAardItem(best.name) ? ' [aard]' : '')
-      + (worn ? `   (worn: ${worn.score} ${worn.name})` : '   (NOTHING WORN)') + mark + '\n', 'system');
+
+    // Aard-branded gear you are already wearing is sticky: nothing displaces it
+    // except another Aard piece of a HIGHER LEVEL, however well the game scores
+    // the alternative. Aard gear does not fade or break, which makes a raw score
+    // comparison the wrong call for it.
+    const forced = [];
+    for(const w of worn){
+      if(!isAardItem(w.name)) continue;
+      const betterAard = usable
+        .filter(c => c.objectid !== w.objectid && isAardItem(c.name) && c.level > w.level)
+        .sort((a,b) => (b.level - a.level) || (b.score - a.score))[0];
+      const pick = betterAard || w;
+      if(!forced.some(f => f.objectid === pick.objectid)) forced.push(pick);
+    }
+
+    // The rest of the slot is the top-scoring usable pieces -- which is what
+    // makes a two-wrist or three-medal slot work: a slot with one place filled
+    // still has a place to fill.
+    const want = forced.slice(0, room);
+    for(const c of usable){
+      if(want.length >= room) break;
+      if(want.some(x => x.objectid === c.objectid)) continue;
+      want.push(c);
+    }
+    const wantIds = new Set(want.map(i => i.objectid));
+    // Worn pieces the ideal loadout does not include, worst first: those are
+    // what comes off, paired against what goes on.
+    const displaced = worn.filter(i => !wantIds.has(i.objectid)).reverse();
+    const toWear = want.filter(i => i.location !== 'eq');
+
+    if(!held.length){
+      bare.push(`${slot} (nothing scanned that fits it)`);
+      continue;
+    }
+    if(!usable.length){
+      const best = held.slice().sort((a,b) => a.level - b.level)[0];
+      bare.push(`${slot} (lowest you own is level ${best.level}, you can use ${cap})`);
+      continue;
+    }
+
+    let d = 0;
+    for(const it of toWear){
+      const off = displaced[d++] || null;
+      upgrades.push({slot, best: it, worn: off});
+      if(!off) emptyFilled++;
+      appendOutput(`  ${slot.padEnd(8)} ${String(it.score).padStart(4)}  ${it.name}`
+        + (isAardItem(it.name) ? ' [aard]' : '')
+        + (off ? `   (replaces ${off.score} ${off.name}) **UPGRADE**`
+               : '   (NOTHING WORN) **EMPTY SLOT**') + '\n', 'system');
+    }
+    // A slot that is already optimal but still has a free place is worth saying
+    // out loud -- it is the case the old code hid completely.
+    const free = room - worn.length - toWear.length;
+    if(free > 0) bare.push(`${slot} (${free} free, nothing else usable to put there)`);
+  }
+
+  if(bare.length){
+    appendOutput(`[dinv] ${bare.length} slot(s) with nothing to offer:\n`,'system');
+    for(const b of bare) appendOutput('    ' + b + '\n','system');
   }
   if(upgrades.length){
     const swaps = upgrades.length - emptyFilled;
@@ -189,25 +292,103 @@ export function dinvBest(){
   return upgrades;
 }
 
+// Refusals the game gives to get/wear/put. Confirmed live: `get <objectid>
+// <containerid>` and `wear <objectid>` are both accepted, so when a swap "can't
+// find" an item the reason is one of these -- and it used to scroll past in raw
+// MUD text with nothing tying it back to the item dinv had asked for.
+const REFUSALS = [
+  /^You do not have that item/i,
+  /^You don't have that item/i,
+  /^I see no .* here/i,
+  /^You must be at least level (\d+) to use/i,
+  /^You can't carry that many items/i,
+  /^You can't carry that much weight/i,
+  /^You are not carrying that/i,
+  /^You can't let go of it/i,        // cursed: the old piece will not come off
+  /^You cannot remove/i,
+];
+
+// What the in-flight swap asked for, so a refusal can be named.
+let swapExpect = null;   // {items: Map(objectid -> {name, slot}), pending: Set, issues: []}
+
+/** Feed MUD text here so a swap can report which item a refusal belongs to. */
+export function dinvWatchText(text){
+  if(!swapExpect) return;
+  for(const raw of stripAnsi(String(text)).split(/\r?\n/)){
+    const line = raw.trim();
+    if(!line) continue;
+    for(const re of REFUSALS){
+      if(re.test(line)){ swapExpect.issues.push(line); break; }
+    }
+  }
+}
+
 /** `dinv swap` -- get + wear each upgrade, then file the displaced piece. */
 export function dinvSwap(){
   const upgrades = dinvBest() || [];
   if(!upgrades.length) return;
-  const b = getBindings();
+  // Same reasoning as dinvSort: without a container to file into, everything the
+  // swap takes off just piles up loose in your inventory.
+  let b = getBindings();
+  if(!Object.keys(b).length) b = autoBind();
+  const missingBind = new Set();
+  swapExpect = { items: new Map(), issues: [] };
   let delay = 0;
   for(const u of upgrades){
+    // Re-read the location now instead of trusting the snapshot dinvBest built:
+    // an earlier step in this same swap, or any invdata since the scan, may have
+    // moved the item, and `get <id> <stale container>` just fails.
+    const fresh = currentLocation(u.best.objectid) || u.best.location;
     const it = u.best;
-    if(it.location !== 'inv' && it.location !== 'eq'){
-      setTimeout(() => sendCmdRaw(`get ${it.objectid} ${it.location}`), delay); delay += 350;
+    swapExpect.items.set(it.objectid, {name: it.name, slot: u.slot});
+    if(fresh !== 'inv' && fresh !== 'eq'){
+      setTimeout(() => sendCmdRaw(`get ${it.objectid} ${fresh}`), delay); delay += 350;
     }
     setTimeout(() => sendCmdRaw(`wear ${it.objectid}`), delay); delay += 350;
     if(u.worn){
-      const target = b[slotFor(u.worn)];
+      const slot = slotFor(u.worn);
+      const target = b[slot];
+      // Silently doing nothing here is why gear piled up loose in inventory.
       if(target){ setTimeout(() => sendCmdRaw(`put ${u.worn.objectid} ${target}`), delay); delay += 350; }
+      else missingBind.add(slot);
     }
   }
-  setTimeout(() => { sendCmdRaw('eqdata'); setTimeout(()=>sendCmdRaw('invdata'), 600); }, delay + 500);
+  if(missingBind.size){
+    appendOutput(`[dinv] no container bound for slot(s) ${[...missingBind].join(', ')}`
+      + ` -- what comes off will stay loose in your inventory ("dinv bind <slot> <container>")\n`, 'error');
+  }
+  // Refresh, then say what actually ended up worn rather than assuming it did.
+  setTimeout(() => {
+    sendCmdRaw('eqdata');
+    setTimeout(() => { sendCmdRaw('invdata'); setTimeout(reportSwap, 1500); }, 600);
+  }, delay + 500);
   appendOutput(`[dinv] swapping ${upgrades.length} item(s), ~${Math.ceil(delay/1000)}s\n`,'quest');
+}
+
+function currentLocation(objectid){
+  if(!sqlDb) return null;
+  try {
+    const r = sqlDb.exec('SELECT location FROM items WHERE objectid=?', [objectid]);
+    return r.length && r[0].values.length ? r[0].values[0][0] : null;
+  } catch(e){ return null; }
+}
+
+function reportSwap(){
+  if(!swapExpect) return;
+  const exp = swapExpect;
+  swapExpect = null;
+  const failed = [];
+  for(const [objectid, info] of exp.items){
+    const loc = currentLocation(objectid);
+    if(loc !== 'eq') failed.push(`${info.slot}: ${info.name}` + (loc ? ` (still in ${describeLocation(loc)})` : ' (not found)'));
+  }
+  if(!failed.length){
+    appendOutput('[dinv] all recommended items are now worn.\n','system');
+  } else {
+    appendOutput(`[dinv] ${failed.length} item(s) did not go on:\n`,'error');
+    for(const f of failed) appendOutput('    ' + f + '\n','error');
+    for(const msg of [...new Set(exp.issues)]) appendOutput('    game said: ' + msg + '\n','error');
+  }
 }
 
 // Aardwolf colour codes look like @x123 / @R / @@ -- strip them for display and
@@ -225,6 +406,10 @@ function cleanName(s){
 // -----------------------------------------------------------------------------
 let collecting = null;   // {location, rows, done}
 const pendingContainers = [];
+// True between `dinv build` and the end of the last container listing. Rows not
+// seen during that sweep are items we no longer hold, and get pruned at the end.
+let rebuilding = false;
+const STALE = '?stale';
 
 const TAG_OPEN  = /^\{(invdata|eqdata)(?:\s+(\S+))?\}\s*$/i;
 const TAG_CLOSE = /^\{\/(invdata|eqdata)\}\s*$/i;
@@ -233,7 +418,11 @@ const TAG_CLOSE = /^\{\/(invdata|eqdata)\}\s*$/i;
 export function buildInventory(){
   if(!sqlDb){ appendOutput('[dinv] no database\n','error'); return; }
   initInventory();
-  sqlDb.run('DELETE FROM items');
+  // Do NOT delete: that threw away every invdetails score too, so a rebuild
+  // silently cost you the scan. Park everything as stale instead; the sweep
+  // below restores the location of anything still held, and prunes the rest.
+  sqlDb.run('UPDATE items SET location=?', [STALE]);
+  rebuilding = true;
   pendingContainers.length = 0;
   appendOutput('[dinv] reading equipment and inventory...\n','system');
   sendCmdRaw('eqdata');
@@ -263,7 +452,16 @@ export function parseInvData(text){
         // Descend into any containers we just learned about.
         const next = pendingContainers.shift();
         if(next) setTimeout(()=>sendCmdRaw('invdata ' + next), 500);
-        else { persistDb(); renderInventory(); }
+        else {
+          if(rebuilding){
+            rebuilding = false;
+            const gone = sqlDb.exec('SELECT COUNT(*) FROM items WHERE location=?', [STALE]);
+            const n = gone.length ? gone[0].values[0][0] : 0;
+            sqlDb.run('DELETE FROM items WHERE location=?', [STALE]);
+            if(n) appendOutput(`[dinv] dropped ${n} item(s) you no longer hold\n`,'system');
+          }
+          persistDb(); renderInventory();
+        }
       }
       continue;
     }
@@ -283,10 +481,20 @@ export function parseInvData(text){
     const level = f[f.length-5].trim();
     const name = cleanName(f.slice(2, f.length-5).join(','));
 
+    // UPSERT, not INSERT OR REPLACE. REPLACE deletes the whole row and inserts
+    // a new one, so every column this statement does not name -- wearslot,
+    // score, scanned -- came back NULL. Since `dinv swap` and `dinv sort` both
+    // end by re-reading invdata, a scan was wiped moments after it finished and
+    // `dinv best` went back to reporting "no scanned items yet" every time.
     sqlDb.run(
-      `INSERT OR REPLACE INTO items
+      `INSERT INTO items
          (objectid, flags, name, level, type, unique_item, wearloc, timer, location, updated)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(objectid) DO UPDATE SET
+         flags=excluded.flags, name=excluded.name, level=excluded.level,
+         type=excluded.type, unique_item=excluded.unique_item,
+         wearloc=excluded.wearloc, timer=excluded.timer,
+         location=excluded.location, updated=excluded.updated`,
       [objectid, flags, name, parseInt(level)||0, parseInt(type)||0,
        parseInt(uniq)||0, parseInt(wearloc), parseInt(timer)||0,
        collecting.location, new Date().toISOString()]);
@@ -420,6 +628,71 @@ export function bindContainer(slot, query){
   appendOutput(`[dinv] slot ${slot} -> ${label} [${target}]\n`,'system');
 }
 
+/**
+ * Choose containers for the level bands without being told which is which.
+ *
+ * Five identically-named backpacks cannot be told apart by name, so they are
+ * taken in inventory order: first backpack -> band 1, second -> band 2, and so
+ * on. A container whose name looks like a gem/misc bag is pulled out first and
+ * used for `misc`.
+ *
+ * The order is only ever consulted HERE. What gets stored is the container's
+ * objectid, so a later death-and-reloot that shuffles the packs does not
+ * silently repoint an existing binding -- the same reason `dinv bind 2.backpack`
+ * resolves the ordinal immediately. Re-run `dinv autobind force` to redo it.
+ */
+export function autoBind(opts){
+  if(!sqlDb) return {};
+  const force = !!(opts && opts.force);
+  const quiet = !!(opts && opts.quiet);
+  const b = getBindings();
+  const res = sqlDb.exec(
+    `SELECT objectid, name FROM items
+      WHERE type=11 AND location='inv'
+      ORDER BY COALESCE(seq, 999999), objectid`);
+  const boxes = (res[0]?.values || []).map(r => ({objectid:String(r[0]), name:r[1]}));
+  if(!boxes.length){
+    appendOutput('[dinv] no containers in your inventory -- run "dinv build" first\n','error');
+    return b;
+  }
+
+  // A gem/misc bag is identifiable by name, unlike the backpacks.
+  const miscAt = boxes.findIndex(c => /\b(gem|gems|misc|junk|pouch|satchel)\b/i.test(c.name));
+  const misc = miscAt >= 0 ? boxes.splice(miscAt, 1)[0] : null;
+
+  const picked = [];
+  const bands = DEFAULT_BANDS.map(x => x.slot);
+  bands.forEach((slot, i) => {
+    if(b[slot] && !force) return;              // never overwrite a deliberate bind
+    if(!boxes[i]) return;
+    b[slot] = boxes[i].objectid;
+    picked.push([slot, boxes[i]]);
+  });
+  if(misc && (!b.misc || force)){ b.misc = misc.objectid; picked.push(['misc', misc]); }
+  setBindings(b);
+
+  if(!quiet || picked.length){
+    if(picked.length){
+      appendOutput('[dinv] chose containers automatically (inventory order):\n','system');
+      let low = 1;
+      const range = {};
+      for(const band of DEFAULT_BANDS){
+        range[band.slot] = band.maxLevel === Infinity ? `${low}+` : `${low}-${band.maxLevel}`;
+        low = band.maxLevel + 1;
+      }
+      for(const [slot, box] of picked){
+        const what = slot === 'misc' ? 'everything not armour/weapon' : 'level ' + range[slot];
+        appendOutput(`    slot ${String(slot).padEnd(4)} ${what.padEnd(28)} ${box.name} [${box.objectid}]\n`,'system');
+      }
+      appendOutput('[dinv] override any of them with "dinv bind <slot> <container>"\n','system');
+    }
+    const short = bands.filter(s => !b[s]);
+    if(short.length) appendOutput(`[dinv] not enough containers for slot(s) ${short.join(', ')} -- items for those bands stay loose\n`,'error');
+    if(!b.misc) appendOutput('[dinv] no gem/misc bag recognised -- bind one with "dinv bind misc <container>"\n','error');
+  }
+  return b;
+}
+
 /** Resolve the MUD's `<n>.<keyword>` form against our own inventory ordering. */
 export function resolveOrdinal(nth, keyword){
   if(!sqlDb || !nth || !keyword) return null;
@@ -456,9 +729,15 @@ function describeBands(){
  */
 export function dinvSort(opts){
   const dryRun = !!(opts && opts.dryRun);
-  const b = getBindings();
   const items = searchItems('', {limit:2000}).filter(i => i.location === 'inv');
   if(!items.length){ appendOutput('[dinv] nothing loose in inventory (run "dinv build" first?)\n','system'); return; }
+
+  // Requiring five `dinv bind` calls before sort would do anything was the real
+  // reason it "did not put anything in the containers": with nothing bound it
+  // had nowhere to file to, and said only "nothing to move". Pick the containers
+  // itself, once, and say which it chose.
+  let b = getBindings();
+  if(!Object.keys(b).length) b = autoBind();
 
   const missing = new Set();
   const plan = [];
@@ -473,12 +752,23 @@ export function dinvSort(opts){
   if(missing.size){
     appendOutput(`[dinv] no container bound for slot(s) ${[...missing].join(', ')} -- use "dinv bind <slot> <container>"\n`,'error');
   }
-  if(!plan.length){ appendOutput('[dinv] nothing to move\n','system'); return; }
+  if(!plan.length){
+    appendOutput(`[dinv] nothing to move: all ${items.length} loose item(s) are already where the bands say`
+      + (missing.size ? ', apart from the unbound slots above' : '') + '\n','system');
+    return;
+  }
 
   for(const p of plan){
     appendOutput(`  slot ${p.slot}  ${p.it.name} (L${p.it.level} ${p.it.typeName})\n`,'system');
   }
-  if(dryRun){ appendOutput(`[dinv] ${plan.length} item(s) would move. Run "dinv sort go" to do it.\n`,'system'); return; }
+  // `dinv sort` is a preview by default -- filing your inventory is not something
+  // to do by accident. Say so loudly: this is the single most common reason it
+  // "does not put anything in the containers".
+  if(dryRun){
+    appendOutput(`[dinv] PREVIEW ONLY -- nothing has moved. ${plan.length} item(s) would move.\n`,'quest');
+    appendOutput('[dinv] type "dinv sort go" to actually do it.\n','quest');
+    return;
+  }
 
   // Space the puts out: Aardwolf drops commands sent faster than it processes.
   let delay = 0;
@@ -590,11 +880,18 @@ const HELP = [
   'dinv wear <query>          wear matching items',
   'dinv containers            list containers and what is in them',
   'dinv wearable             what you can wear at your level + tier bonus',
-  'dinv scan [all]           ask the game for each item score + wear slot',
-  'dinv best                 best item per slot, ranked by the game score',
+  'dinv scan [all|here]      ask the game for each item score + wear slot.',
+  '                          Stored gear is taken out and put straight back --',
+  '                          invdetails cannot see inside a container. "here"',
+  '                          skips that; "all" re-asks about everything.',
+  'dinv best                 best loadout per slot, ranked by the game score',
   'dinv swap                 wear every upgrade and stow what comes off',
   'dinv bind <slot> <cont>   bind slot; id, name, or 2.backpack (resolved to an id)',
-  'dinv sort [go]            preview/do: file carried items by level band',
+  'dinv autobind [force]     pick containers automatically, in inventory order',
+  'dinv bindings             show which container each band files into',
+  'dinv bands                show the level bands',
+  'dinv sort [go]            preview/do: file carried items by level band.',
+  '                          Binds containers itself the first time if needed.',
   'dinv help                  this list',
 ].join('\n');
 
@@ -612,11 +909,24 @@ export function dinvCommand(args){
       return;
     }
     case 'wearable': dinvWearable(); return;
-    case 'scan':    dinvScan({all: /^all$/i.test(rest.trim())}); return;
+    case 'scan':    dinvScan({all: /^all$/i.test(rest.trim()), here: /^here$/i.test(rest.trim())}); return;
     case 'best':    dinvBest(); return;
     case 'swap':
     case 'wearbest': dinvSwap(); return;
     case 'bind': { const p=rest.split(/\s+/); bindContainer(p.shift(), p.join(' ')); return; }
+    case 'autobind': autoBind({force: /^force$/i.test(rest.trim())}); return;
+    case 'bands':   appendOutput(describeBands()+'\n','system'); return;
+    case 'bindings': {
+      const b = getBindings();
+      const keys = Object.keys(b);
+      if(!keys.length){ appendOutput('[dinv] nothing bound -- "dinv autobind" picks containers for you\n','system'); return; }
+      for(const k of ['1','2','3','4','5','misc']){
+        if(!b[k]) continue;
+        const hit = searchItems(b[k], {limit:1})[0];
+        appendOutput(`    slot ${k.padEnd(4)} ${hit ? hit.name : '(not in inventory!)'} [${b[k]}]\n`,'system');
+      }
+      return;
+    }
     case 'sort':    dinvSort({dryRun: !/^go$/i.test(rest.trim())}); return;
     case 'get':     dinvGet(rest); return;
     case 'wear':    dinvWear(rest); return;

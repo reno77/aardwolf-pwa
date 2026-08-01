@@ -50,6 +50,7 @@ pwa/js/snd.js       campaign helper (see §0)
 pwa/js/dinv.js      inventory manager (invdata/eqdata)
 pwa/js/map.js       canvas map, tap-to-walk
 pwa/js/joystick.js  the two movement sticks
+pwa/js/buttons.js   the editable shortcut row above the input
 pwa/js/ui.js        output rendering, panels, aliases, triggers
 ```
 
@@ -59,7 +60,30 @@ value from elsewhere, export a setter (see `setMaxLines`, `replaceDb`).
 
 Inline `on*` attributes cannot see module scope. `main.js` re-exposes the
 handlers they use on `window`; add to that list when you add a handler, or wire
-it with `addEventListener` instead (the joysticks do the latter).
+it with `addEventListener` instead (the joysticks and the shortcut row do the
+latter).
+
+### Shortcut row (`#bottomrow`)
+
+Rendered from the `buttons` table by `buttons.js`, not hardcoded in the markup.
+**Tap** sends the command through `sendCmd` (so aliases and `;` sequences work),
+**hold 500 ms** opens the editor for that button, **+** adds one. The default set
+is seeded once, guarded by `meta.buttons_seeded` so deleting every button does
+not bring them back on the next load.
+
+The editor's Position field is 1-based and reads left to right. `moveTo()`
+renumbers every row after a move rather than nudging a single `pos`, which keeps
+the sequence dense across inserts and deletes so there is never a `pos` tie for
+`ORDER BY pos, id` to break arbitrarily. Deleting also closes the gap.
+
+The row is action commands only — movement is joystick-only, and there is no
+movement button anywhere in the UI. The pinned group to the right of the divider
+(`#bottomrow-fixed`: `+ 🎯 🎒 ⚙️`) is panel navigation, stays put while the row
+scrolls, and is deliberately not editable.
+
+Activation is on `pointerup`, not `click`, so the long-press can suppress the tap
+without a click-cancelling dance. A drag past 10 px cancels the press entirely,
+which is what lets you scroll the row without opening an editor.
 
 ## 3. Local database (schema v2)
 
@@ -73,7 +97,13 @@ exits(from_uid, dir, to_uid, level, door, key_name, PRIMARY KEY(from_uid, dir))
 areas(name TEXT PK, key, minlvl, maxlvl, lock, nogo)
 mobs(mob, area, room, room_uid, seen_count, last_seen, PRIMARY KEY(mob,area,room))
 items(objectid TEXT PK, flags, name, level, type, unique_item, wearloc, timer, location, updated)
+buttons(id INTEGER PK AUTOINCREMENT, label, cmd, cls, pos)
 ```
+
+`buttons` is added by `SCHEMA_SQL` without a version bump — `initDb` re-runs the
+whole script on every load, so `CREATE TABLE IF NOT EXISTS` picks up new tables
+in an existing v3 database. Use that path for any table that does not invalidate
+map data. It is rescued alongside `aliases`/`triggers` on a real schema rebuild.
 
 Three things to understand about `exits`:
 
@@ -148,6 +178,40 @@ clan halls, epic and puzzle areas) — the helper reports and skips instead of
 looping. A failed `rt` is now parsed and abandons the target rather than falling
 through to `where`, which only works *inside* the target area.
 
+### Area names: keyword vs display name
+
+**GMCP puts the area KEYWORD in `rooms.area`, not the display name.** `room.info`
+sends `"zone":"aardington"` and `room.area` sends
+`{"id":"aardington","name":"Aardington Estate"}`, and `processGMCP` stores
+`data.zone`. Gaardian, campaign text and `where` output all use the *display*
+name. The local value is therefore a **prefix** of the long one.
+
+Every prefix test in the codebase originally pointed the other way
+(`LOWER(area) LIKE 'aardington estate%'`), which silently matched nothing:
+
+- `importGaardianArea` promoted no live rooms, so an imported area stayed an
+  island. Standing *inside* Aardington Estate, pathing to The stables reported
+  "no path to that room from here" — the room existed twice, once as the live
+  uid and once as `gaardian:344:25`, with no edge between the two subgraphs.
+- `resolveRoomsByName` returned only the Gaardian placeholder, so the walker was
+  aimed at the disconnected copy even when the real room was known.
+
+Both now accept a match in **either** direction (`? LIKE LOWER(area)||'%'`), and
+`resolveRoomsByName` orders real uids ahead of `gaardian:%` ones.
+
+`room.area` is also an authoritative keyword→name pair, so `processGMCP` upserts
+it into `areas(name, key)`. Walking anywhere now teaches the client that area's
+`runto` keyword for free — no `areas <n> <m> keywords` harvest, and no falling
+back to the first-word guess (which yields `aardi`, not `aardington`).
+
+### When there is no mapped route at all
+
+`gotoRoomUid` used to report failure and stop. Importing an area from Gaardian
+does not connect it to anywhere you have walked, and from a clan hall there is no
+mapped route anywhere — so it now falls back to the server's own
+`runto <keyword>` to get into the target area, waits for GMCP to confirm arrival,
+and retries the local path from inside (once; `opts.noAreaHop` stops recursion).
+
 ## 6. Inventory (`dinv`)
 
 Modelled on [Aardurel/aard-plugins](https://github.com/Aardurel/aard-plugins).
@@ -165,8 +229,93 @@ container. `dinv build` walks equipment → inventory → every container found.
 Item names contain commas and Aardwolf colour codes, so the parser takes fields
 from both ends of the line and strips `@x123`/`@R` codes.
 
-Commands: `dinv build | search | get | put | wear | containers | help`,
-available as `dinv ...` or `/dinv ...`. Verified live: 339 items indexed.
+Commands: `dinv build | search | get | put | wear | containers | scan | best |
+swap | bind | sort | help`, available as `dinv ...` or `/dinv ...`.
+
+### `invdetails` — where scores and wear slots come from
+
+`invdata` reports `wear-loc` as `-1` for anything not currently worn, so it can
+never tell you which slot a stored item belongs in. `invdetails <objectid>` can,
+for worn *and* stored items alike, and it carries the game's own item score:
+
+```
+{invheader}objectid|level|itemtype|value|weight|wearloc|flags|owner|clan|…|itemscore
+{invheader}2507920616|41|Armor|5600|0|eyes|unique, glow…||The Midgaardian…||2|||80
+```
+
+Confirmed live against `bedokman`.
+
+**`invdetails` cannot see inside a container.** For any item in a backpack the
+game answers `Item <objectid> not found.` — verified live, and passing the
+container as a second argument does not help (`help invdetails` documents a
+single argument). This was the biggest defect in the recommender: all gear
+stored in backpacks had no `wearslot` and no `score`, so `dinv best` could not
+see it and reported whole slots as having nothing to offer. The refusal line was
+parsed as noise, so nothing said anything was wrong.
+
+`dinv scan` therefore runs two passes: carried and worn items get a plain
+`invdetails` at 450 ms spacing, and each stored item is taken out, detailed, and
+put straight back (`get`/`invdetails`/`put`, 400 ms apart). That pass is limited
+to `WEARABLE_TYPES` because it costs three commands per item. `dinv scan here`
+skips it entirely. `parseInvDetails` counts the "not found" replies and the scan
+reports the total.
+
+Three bugs fixed here; all three are easy to reintroduce:
+
+1. **Never use `INSERT OR REPLACE` on `items`.** REPLACE deletes the row and
+   inserts a new one, so every column the statement does not name — `wearslot`,
+   `score`, `scanned` — came back `NULL`. Since `dinv swap` and `dinv sort` both
+   end by re-reading `invdata`, a scan was destroyed seconds after it finished
+   and `dinv best` reported "no scanned items yet" forever. `parseInvData` now
+   uses `ON CONFLICT(objectid) DO UPDATE`, and `dinv build` marks rows stale and
+   prunes the survivors instead of `DELETE FROM items`.
+2. **Several wear slots hold more than one item** — confirmed from live eqdata:
+   `ear`, `neck`, `wrist`, `finger` ×2 and `medal` ×3. Treating a slot as full
+   when one of its two places was occupied meant a bare second wrist or ring was
+   never offered anything. `SLOT_CAPACITY` in `dinv.js` holds the exceptions;
+   `dinv best` picks the top *capacity* items per slot.
+3. **Worn Aard gear is sticky** (user rule). Nothing displaces an Aard-branded
+   piece you are already wearing except another Aard piece of a *higher level* —
+   not a non-Aard item however well the game scores it, and not a lower-level
+   Aard item with a better score. Aard gear does not fade or break, so a raw
+   score comparison is the wrong call for it. Implemented as a `forced` list per
+   slot that is seeded before the score ranking fills the remaining capacity.
+4. **Portals are never recommended** (`NEVER_RECOMMEND = {20}`). A portal is
+   *held*, and holding one costs the off-hand a second weapon needs. For the same
+   reason `SLOT_CAPACITY.wield` is **2** — dual wield. Drop it to 1 for a
+   character without the skill. A portal already worn is still shown, so it can
+   be reported as the thing being displaced.
+5. **A slot with no usable candidate used to print nothing at all**, which is
+   indistinguishable from the recommender being broken. `dinv best` now iterates
+   `ALL_SLOTS` and says why a slot got no suggestion ("lowest you own is level
+   161, you can use 121").
+
+### Container bindings
+
+`dinv sort` files loose items into containers by level band. It used to need five
+`dinv bind` calls first, and with nothing bound it filed nothing and reported
+only "nothing to move" — which reads as "already sorted". `dinv sort` and
+`dinv swap` now call `autoBind()` when no bindings exist at all.
+
+Five identically-named backpacks cannot be told apart by name, so `autoBind`
+takes them in **inventory order** (band 1 = first backpack) and pulls out a
+container whose name matches `gem|misc|junk|pouch|satchel` for `misc`. Inventory
+order is consulted **only at bind time**; what gets stored is the objectid, so a
+death-and-reloot that shuffles the packs cannot silently repoint an existing
+binding. This is the same rule as `dinv bind 2.backpack`, and it is deliberate —
+see §7c. A manual bind is never overwritten without `dinv autobind force`.
+
+`dinv bindings` shows the current mapping, `dinv bands` the level ranges.
+
+`get <objectid> <containerid>` and `wear <objectid>` are both **verified working**
+against the live MUD — if a swap fails it is not the syntax. `dinvWatchText` in
+`dinv.js` collects the game's refusals during a swap and `reportSwap` names the
+items that did not go on, so the next failure report says which and why.
+
+Item level is not the level needed to use it: a level 200 item is wearable at
+150 for a tier 5 character. `effectiveLevel()` (`charLevel + charTier * 10`) is
+the matching cap — verified live: level 71 tier 5 → cap 121, and the game
+refused a level 200 item with "You must be at least level 150".
 
 ## 7. Relay
 

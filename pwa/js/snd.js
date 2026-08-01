@@ -13,6 +13,9 @@ export let lastCpInfoRaw='';
 export let lastCpCheckRaw='';
 export let lastCampaignRaw='';
 
+// How many `where <n>.<kw>` ordinals to walk before giving up on a target.
+const WHERE_ORD_MAX=8;
+
 // =============================================================================
 // SEARCH AND DESTROY CAMPAIGN HELPER (ported from Search_and_Destroy_v2.0.xml)
 // =============================================================================
@@ -26,9 +29,36 @@ export function gmkw(s, areaName){
   return '"'+trimmed+'"';
 }
 
+/**
+ * The single word to hand `where`, so ordinals work: `where 2.barn`.
+ *
+ * `where` takes one keyword and answers with ONE mob. Quoting the whole name
+ * ("barn swallow") is not a phrase search, and the first mob matching the
+ * keyword may not be the one you want -- confirmed live: in Aardington Estate
+ * `where barn` answers "a swooping swallow", and only `where 2.barn` reaches
+ * "a barn swallow". So the keyword must stay a bare word that an ordinal can be
+ * prefixed to.
+ */
+export function whereKw(s){
+  if(!s) return '';
+  const words=String(s).toLowerCase()
+    .replace(/^\s*(a|an|the)\s+/i,'')
+    .replace(/[^a-z0-9\s'-]/g,' ')
+    .split(/\s+/).filter(Boolean);
+  // The LAST word, not the first: mob names are "<adjective> <noun>", and the
+  // noun is what distinguishes them. Taking the first word gave `black` for
+  // "a black pegasus" and `large` for "a large apple tree" -- adjectives half the
+  // area shares, so the ordinal walk ran out before reaching the target. `pegasus`
+  // and `swallow` land on it in one or two tries.
+  return words[words.length-1]||'';
+}
+
 export function huntTrickKw(s){
-  // For numbered hunt, default to the same keyword as gmkw.
-  return gmkw(s);
+  // `hunt` takes ONE keyword, exactly like `where`. Passing the full name failed
+  // outright -- confirmed live: both `hunt 1.black pegasus` and `hunt black
+  // pegasus` answered "You seem unable to hunt that target for some reason.",
+  // while `pega` located it. So `hunt 1.pegasus`, never the phrase.
+  return whereKw(s);
 }
 
 // Pathfinding and stepwise movement used to live here as two more copies of
@@ -46,9 +76,46 @@ export function pickNearestRoom(rooms, fromUid){
   return best || rooms[0];
 }
 
-export function gotoRoomUid(toUid, onDone){
+function areaOfRoom(uid){
+  if(!sqlDb || !uid) return null;
+  try {
+    const r=sqlDb.exec('SELECT area FROM rooms WHERE uid=?', [uid]);
+    return (r.length && r[0].values.length) ? r[0].values[0][0] : null;
+  } catch(e){ return null; }
+}
+
+/** Poll until GMCP says we are in `areaName`, then run `fn`. */
+function awaitAreaThen(areaName, fn, tries){
+  tries = (tries==null) ? 40 : tries;          // ~60s at 1.5s a tick
+  if(currentRoom.area && areaNameMatches(currentRoom.area, areaName)){
+    setTimeout(fn, 800);                        // let the arrival room.info settle
+    return;
+  }
+  if(tries<=0){
+    appendOutput('[S&D] never arrived in '+areaName+'; giving up on this target.\n','error');
+    return;
+  }
+  setTimeout(()=>awaitAreaThen(areaName, fn, tries-1), 1500);
+}
+
+export function gotoRoomUid(toUid, onDone, opts){
   if(!toUid) return;
   walkTo(toUid, onDone, (reason)=>{
+    // A room can be present in the local map and still be unreachable. Importing
+    // an area from Gaardian does not connect it to anything you have actually
+    // walked, so it sits as an island -- and from a clan hall there is no mapped
+    // route to anywhere. No amount of BFS fixes that; the server's own `runto`
+    // does. Get into the area first, then path locally from inside it.
+    const area=areaOfRoom(toUid);
+    const inArea=currentRoom.area && area && areaNameMatches(currentRoom.area, area);
+    if(area && !inArea && !(opts && opts.noAreaHop)){
+      appendOutput('[S&D] no mapped route from '+(currentRoom.area||'here')+' to '+area
+        +' -- using the server\'s runto to reach the area first.\n','quest');
+      if(runtoArea(area)){
+        awaitAreaThen(area, ()=>gotoRoomUid(toUid, onDone, {noAreaHop:true}));
+        return;
+      }
+    }
     appendOutput('[S&D] could not reach the target room ('+reason+').\n','error');
   });
 }
@@ -80,7 +147,15 @@ export function resolveRoomsByName(roomName, areaName){
   if(!sqlDb || !roomName) return [];
   let res;
   if(areaName){
-    res=sqlDb.exec("SELECT uid, name, area FROM rooms WHERE name LIKE ? AND area LIKE ?", ['%'+roomName+'%', '%'+areaName+'%']);
+    // `area LIKE '%<display name>%'` alone misses every live room, because GMCP
+    // stores the area KEYWORD ('aardington') while campaign text gives the
+    // display name ('Aardington Estate'). Accept a match in either direction.
+    res=sqlDb.exec(
+      // A room you have actually stood in beats a Gaardian placeholder of the
+      // same name: its uid is the one the live exit graph refers to.
+      "SELECT uid, name, area FROM rooms WHERE name LIKE ? AND (area LIKE ? OR ? LIKE area||'%')"
+      + " ORDER BY (uid LIKE 'gaardian:%')",
+      ['%'+roomName+'%', '%'+areaName+'%', areaName.toLowerCase()]);
   } else {
     res=sqlDb.exec("SELECT uid, name, area FROM rooms WHERE name LIKE ?", ['%'+roomName+'%']);
   }
@@ -295,7 +370,16 @@ export function xcpByIndex(index, overrideKw){
   let kw = gmkw(t.mob);
   const pending={...t, recallSent:false, located:false, roomQueue:[], roomIndex:0, whereInstances:null, huntTrickIndex:1, campaignInstance:null, htkw:htkw, kw:kw};
   sndState.pendingXcp=pending;
-  xcpStep(pending);
+  // A throw in here used to vanish -- the runaway recursion above blew the stack
+  // and `/xcp` simply printed the target line and stopped, with nothing to say
+  // why. Surface it in the output pane, not just the devtools console.
+  try {
+    xcpStep(pending);
+  } catch(e){
+    appendOutput('[S&D] internal error while starting this target: '+(e&&e.message||e)+'\n','error');
+    console.error('xcpStep failed', e);
+    sndState.pendingXcp=null;
+  }
 }
 
 export function xcpRecall(t, onComplete){
@@ -407,6 +491,13 @@ export function xcpStep(t){
     });
     return;
   }
+  // Standing in the target area already: there is no recall to do, so record the
+  // step as done. Without this, step 2's "area was just discovered, go back and
+  // recall first" guard sees `!recallSent` forever and re-enters xcpStep on every
+  // pass -- unbounded recursion that blows the stack and prints nothing at all,
+  // which is exactly what `/xcp 1` did from inside the mob's own area.
+  if(alreadyInArea) t.recallSent=true;
+
   // 2. Locate exact instance via where. Ensure target area is imported first so room names are resolvable.
   if(!t.located){
     if(t.type==='unknown' || !t.areaUid){
@@ -428,9 +519,11 @@ export function xcpStep(t){
         return;
       }
     } else {
-      // nearest / qw: single where with short keyword
-      appendOutput('[S&D] locating '+t.mob+' instances...\n','quest');
-      sendCmd('where '+t.htkw);
+      // nearest / qw: one keyword, walking the ordinals until the NAME matches.
+      t.whereKw=whereKw(t.mob);
+      t.whereOrd=t.whereOrd||1;
+      appendOutput('[S&D] locating '+t.mob+' (where '+(t.whereOrd>1?t.whereOrd+'.':'')+t.whereKw+')...\n','quest');
+      sendCmd('where '+(t.whereOrd>1?t.whereOrd+'.':'')+t.whereKw);
     }
     return;
   }
@@ -535,9 +628,12 @@ export function xcpRunCampaignHunt(t){
 export function xcpQueryWhereInstance(t, n){
   t.whereIndex=n;
   t.whereAwaiting=n;
-  const full=t.mob.toLowerCase().replace(/^\s*(a|an|the)\s+/i,'');
-  appendOutput('[S&D] querying instance '+n+': where '+n+'.'+full+'\n','quest');
-  sendCmd('where '+n+'.'+full);
+  // One keyword, not the phrase -- `where 1.barn swallow` is not a thing.
+  // parseWhereOutput checks the returned NAME, so a same-keyword neighbour is
+  // rejected rather than being walked to.
+  const kw1=whereKw(t.mob);
+  appendOutput('[S&D] querying instance '+n+': where '+n+'.'+kw1+'\n','quest');
+  sendCmd('where '+n+'.'+kw1);
   t.whereTimeout=setTimeout(()=>{
     if(t.whereAwaiting===n){
       appendOutput('[S&D] where '+n+' timed out; stopping enumeration at '+(n-1)+' instance(s).\n','quest');
@@ -581,8 +677,9 @@ export function xcpContinueCampaignHunt(t, inst){
       xcpRunCampaignHunt(t);
     }
   }, 3500);
-  // Use the FULL mob name for campaign hunt verification: hunt fails on the real campaign target.
-  const huntArg=inst.n+'.'+t.mob.toLowerCase().replace(/^\s*(a|an|the)\s+/i,'');
+  // ONE keyword plus the ordinal. The full name fails outright: `hunt 1.black
+  // pegasus` answered "You seem unable to hunt that target for some reason."
+  const huntArg=inst.n+'.'+whereKw(t.mob);
   sendCmd('hunt '+huntArg);
 }
 
@@ -600,8 +697,27 @@ export function xcpGotoInstance(t){
     return;
   }
   appendOutput('[S&D] identified instance in '+inst.roomName+'\n','quest');
-  // Use a non-campaign instance to navigate. Find the first instance that is NOT the campaign instance
-  // and is in a different room, then follow hunt directions until we reach the target room.
+
+  // Prefer the map over `hunt`.
+  //
+  // `hunt` matches on a keyword, so an un-numbered `hunt swallow` follows
+  // whichever swallow the game picks first -- confirmed live, it set off west
+  // after "a swooping swallow" while the campaign mob sat in The carriage house.
+  // And `hunt <n>.<kw>` on the campaign mob is refused outright ("You seem
+  // unable to hunt that target"); that refusal is precisely how the hunt trick
+  // identifies it. So hunt can never navigate to the actual target. A room name
+  // from `where` is exact, and the area is imported -- use it.
+  let mapped=null;
+  if(inst.roomUid) mapped={uid:inst.roomUid, name:inst.roomName};
+  else if(inst.roomName) mapped=resolveRoomByNameAnywhere(inst.roomName, t.areaName);
+  if(mapped && mapped.uid){
+    appendOutput('[S&D] using mapped path to '+inst.roomName+'\n','quest');
+    gotoRoomUid(mapped.uid, ()=>xcpKillTarget(t));
+    return;
+  }
+
+  // Unmapped area or maze: fall back to following a NON-campaign instance with
+  // hunt, which at least converges on the right room.
   const navInst=(t.whereInstances||[]).find(i=>i!==inst && i.roomName && i.roomName.toLowerCase()!==inst.roomName.toLowerCase()) || null;
   if(navInst){
     appendOutput('[S&D] navigating via non-campaign instance '+navInst.n+' in '+navInst.roomName+'\n','quest');
@@ -653,7 +769,7 @@ export function xcpFollowHuntInstance(t, navInst){
   // Follow hunt for the nav instance. Parse directional output from Aardwolf.
   sndState.pendingXcpNav={target:t, nav:navInst, at:Date.now()};
   appendOutput('[S&D] following hunt '+navInst.n+'...\n','quest');
-  sendCmd('hunt '+navInst.n+'.'+t.mob.toLowerCase().replace(/^\s*(a|an|the)\s+/i,''));
+  sendCmd('hunt '+navInst.n+'.'+whereKw(t.mob));
   sndState.xcpNav.huntTimeout=setTimeout(()=>{
     appendOutput('[S&D] hunt navigation timed out; trying direct path.\n','quest');
     sndState.pendingXcpNav=null;
@@ -801,8 +917,8 @@ export function xcpFollowHuntByKeyword(t, kw){
     xcpKillTarget(t);
     return;
   }
-  // For keyword hunt, use the unquoted mob name without article.
-  const bareKw=t.mob.toLowerCase().replace(/^\s*(a|an|the)\s+/i,'').trim();
+  // `hunt` takes a single keyword, never the phrase.
+  const bareKw=whereKw(t.mob);
   sndState.pendingXcpNav={target:t, nav:null, kw:kw, at:Date.now()};
   appendOutput('[S&D] following hunt '+bareKw+'...\n','quest');
   sendCmd('hunt '+bareKw);
@@ -926,6 +1042,7 @@ export function parseWhereOutput(text){
   const lines=clean.split(/\r?\n/);
   const instances=[];
   const fallback=[];
+  const wrongName=[];   // right keyword, wrong mob -- drives the ordinal retry
   const kw=(t.htkw||'').toLowerCase();
   const targetMob=t.mob.toLowerCase();
   // Load candidate room names for the target area to do suffix matching.
@@ -1028,28 +1145,68 @@ export function parseWhereOutput(text){
     // Reject lines like "an apple-carrying hedgehog" when target is "a large apple tree".
     const fullMob=t.mob.toLowerCase().replace(/^\s*(a|an|the)\s+/i,'');
     const fullMobWords=fullMob.split(/\s+/).filter(Boolean);
-    if(sndState.xcpMode==='ch' || sndState.xcpMode==='ht'){
-      // Require every word of the full mob name to appear in order in the mob column.
-      let mi=0;
-      const mobWords=mobLower.split(/\s+/).filter(Boolean);
-      for(const w of mobWords){
-        if(mi<fullMobWords.length && w===fullMobWords[mi]) mi++;
-      }
-      if(mi!==fullMobWords.length){
-        // Not a matching mob line for this target; treat as a fallback only if no better match exists.
-        if(/someone|somebody|something/i.test(mobLower)) fallback.push({n, roomName, roomUid:null, generic:true});
-        continue;
-      }
+    // Require every word of the full mob name to appear, in order, in the mob
+    // column. This used to run only in ch/ht mode; every other mode accepted
+    // `mobLower.includes(kw)`, a bare substring test on a shared keyword. Hunting
+    // "a barn swallow" therefore locked on to "a swooping swallow" in the same
+    // area and walked to the wrong mob -- the two share the word `swallow`, and
+    // the swooping one is listed first.
+    let mi=0;
+    const mobWords=mobLower.split(/\s+/).filter(Boolean);
+    for(const w of mobWords){
+      if(mi<fullMobWords.length && w===fullMobWords[mi]) mi++;
+    }
+    if(mi===fullMobWords.length){
       instances.push({n, roomName, roomUid:null});
       continue;
     }
-
-    // For other modes, include if mob column matches target name or contains the keyword.
-    if(mobMatches(t.mob, mobLower) || (kw && mobLower.includes(kw))){
-      instances.push({n, roomName, roomUid:null});
-    } else if(/someone|somebody|something/i.test(mobLower)){
+    // `where` hides the name of a mob you cannot see; those lines are still worth
+    // keeping, but only if nothing named matches.
+    if(/someone|somebody|something/i.test(mobLower)){
       fallback.push({n, roomName, roomUid:null, generic:true});
+    } else {
+      // A different mob sharing the keyword. `where` answers with only one mob,
+      // so the next ordinal is the only way past it.
+      wrongName.push(mobCol.trim());
     }
+  }
+
+  // Nothing named right, but something answered: step to `where <n+1>.<kw>`.
+  //
+  // In ch/ht mode the enumeration below assumed every `where n.<kw>` reply WAS
+  // the target, so once the name check started rejecting neighbours the reply
+  // simply went unclaimed, `whereAwaiting` stayed set, and the 5s timeout
+  // declared "0 instance(s)". Advance the ordinal instead -- that is the whole
+  // point of enumerating.
+  if(!instances.length && !fallback.length && wrongName.length
+     && (sndState.xcpMode==='ch' || sndState.xcpMode==='ht') && t.whereAwaiting){
+    clearTimeout(t.whereTimeout||null);
+    const n=t.whereAwaiting;
+    t.whereAwaiting=null;
+    if(n>=WHERE_ORD_MAX){
+      appendOutput('[S&D] "'+t.mob+'" not among the first '+WHERE_ORD_MAX+' matches; giving up on this target.\n','error');
+      t.located=true;
+      setTimeout(()=>xcpStep(t), 100);
+      return;
+    }
+    appendOutput('[S&D] instance '+n+' is "'+wrongName[0]+'", not "'+t.mob+'" -- trying '+(n+1)+'\n','quest');
+    xcpQueryWhereInstance(t, n+1);
+    return;
+  }
+
+  if(!instances.length && !fallback.length && wrongName.length
+     && (sndState.xcpMode!=='ch' && sndState.xcpMode!=='ht') && t.whereKw){
+    t.whereOrd=(t.whereOrd||1)+1;
+    if(t.whereOrd>WHERE_ORD_MAX){
+      appendOutput('[S&D] "'+t.mob+'" not among the first '+WHERE_ORD_MAX+' "'+t.whereKw+'" mobs here; skipping.\n','error');
+      t.whereOrd=1;
+      return;
+    }
+    appendOutput('[S&D] that is "'+wrongName[0]+'", not "'+t.mob+'" -- trying where '+t.whereOrd+'.'+t.whereKw+'\n','quest');
+    setTimeout(()=>{
+      if(sndState.pendingXcp===t && !t.located) sendCmd('where '+t.whereOrd+'.'+t.whereKw);
+    }, 600);
+    return;
   }
   let use = instances.length ? instances : fallback;
   if(use.length===0) return; // not a where block we can parse
@@ -1229,8 +1386,9 @@ export function xcpVerifyKill(t, onStillAlive){
 }
 
 export function xcpScheduleAction(t){
-  if(sndState.xcpMode==='ht') setTimeout(()=>sendCmd('hunt '+t.kw), 600);
-  else if(sndState.xcpMode==='qw') setTimeout(()=>sendCmd('where '+t.kw), 600);
+  const kw1=whereKw(t.mob)||t.kw;
+  if(sndState.xcpMode==='ht') setTimeout(()=>sendCmd('hunt '+kw1), 600);
+  else if(sndState.xcpMode==='qw') setTimeout(()=>sendCmd('where '+kw1), 600);
 }
 
 // areaRuntoKeyword lived here as "first word, truncated to 5 chars". It now
@@ -1281,7 +1439,7 @@ export function setXcpMode(mode){
 }
 
 export function doHuntTrick(mob){
-  if(mob){ sndState.shortMobName=gmkw(mob); }
+  if(mob){ sndState.shortMobName=whereKw(mob); }
   if(!sndState.shortMobName){ appendOutput('[S&D] No target. Use /ht <mob> or /xcp first.\n','error'); return; }
   sendCmd('hunt '+sndState.shortMobName);
 }

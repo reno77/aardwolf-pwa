@@ -7,7 +7,7 @@ import { doRunto, onMudText } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
          parseRuntoOutput, parseAutoHuntOutput, huntTo, stopAutoHunt, setXcpMode, sndState, xcpByIndex, xcpNext } from './snd.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
-import { dinvCommand, parseInvData, parseInvDetails } from './dinv.js';
+import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { WS_URL, commandMap } from './state.js';
 import { appendOutput, checkQuest, clearOutput, maxLines, processTriggers, setMaxLines, togglePanel, triggered } from './ui.js';
 // --- state owned by this module ---
@@ -157,10 +157,28 @@ export function sendCmdSequence(seq){
   appendOutput('[Alias] '+cmds[0]+'\n','system');
 }
 
+/**
+ * A bare Enter, exactly as a terminal client sends it.
+ *
+ * Aardwolf needs this for its pager ("[ Paging : (Enter), (T)op, (Q)uit ... ]")
+ * and to redraw a prompt. It is not `sendCmd('')`, which would echo a stray "> ".
+ */
+export function sendBlankLine(){
+  if(!ws||!connected){appendOutput('[Offline]\n','error');return;}
+  if(loginPending){appendOutput('[Login required]\n','error');return;}
+  ws.send(JSON.stringify({cmd:''}));
+}
+
 export function submitCmd(){
   const el=document.getElementById('cmd-input');
   const text=el.value.trim();
-  if(!text) return;
+  // Keep the caret in the box so the on-screen keyboard stays up -- paging
+  // through a long help file means pressing this many times in a row.
+  try { el.focus(); } catch(e){ /* not focusable yet */ }
+  // An empty submit used to return here and do nothing at all, so the send
+  // button was dead whenever the box was empty and there was no way to page
+  // from a phone. Send the newline the MUD is waiting for instead.
+  if(!text){ sendBlankLine(); return; }
   // Add to history, keep last 10
   if(cmdHistory.length===0 || cmdHistory[cmdHistory.length-1]!==text){
     cmdHistory.push(text);
@@ -320,6 +338,7 @@ export function handleMessage(msg){
       onMudText(msg.text);          // let an in-flight walk notice "no exit that way" etc.
       parseInvData(msg.text);          // eqdata/invdata blocks
       parseInvDetails(msg.text);       // invdetails: wear slot + item score
+      dinvWatchText(msg.text);         // tie a get/wear refusal back to the swap
       parseAreasOutput(msg.text);      // learning the area keyword list
       parseRuntoOutput(msg.text);      // notice a refused `rt`
       parseAutoHuntOutput(msg.text);   // server-driven maze navigation

@@ -161,8 +161,16 @@ export function walkTo(targetUid, onDone, onFail){
   if(!path.length){ if(onDone) onDone(); return true; }
 
   cancelWalk('superseded');
-  walk = {targetUid, path, expectUid:null, lastFrom:null, lastDir:null,
-          repaths:0, timer:null, onDone, onFail, opened:false};
+  // A Gaardian target uid is a placeholder that no live room will ever equal, so
+  // remember the room NAME too and treat arriving there as success.
+  let targetName = null;
+  try {
+    const r = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [targetUid]);
+    if(r.length && r[0].values.length) targetName = String(r[0].values[0][0]||'').toLowerCase();
+  } catch(e){ /* name is a convenience, not a requirement */ }
+  walk = {targetUid, targetName, path, plan: path.slice(1), expectUid:null,
+          lastFrom:null, lastDir:null, repaths:0, timer:null, onDone, onFail,
+          opened:false, blind:false};
   setWalkCanceller(cancelWalk);
   appendOutput(`[nav] walking ${path.length} step${path.length>1?'s':''}: `
     + path.map(p=>p.dir).join(' ') + '\n', 'system');
@@ -173,6 +181,9 @@ export function walkTo(targetUid, onDone, onFail){
 function step(){
   if(!walk) return;
   if(currentRoom.uid === walk.targetUid){ finish(true); return; }
+  if(walk.targetName && String(currentRoom.name||'').toLowerCase() === walk.targetName){
+    finish(true); return;
+  }
 
   // Character must be able to move. Fighting is a pause, not a failure.
   if(charState === STATE_FIGHTING || charState === STATE_RUNNING){
@@ -188,10 +199,30 @@ function step(){
   }
 
   // Re-path from where we actually are rather than trusting the plan.
-  const path = findPath(currentRoom.uid, walk.targetUid);
-  if(path === null){ finish(false, 'lost the route in ' + (currentRoom.name||'?')); return; }
+  let path = findPath(currentRoom.uid, walk.targetUid);
+  if(path === null){
+    // Re-pathing fails routinely while crossing an area imported from Gaardian:
+    // every step into a skeleton room arrives with a real uid that is not yet in
+    // the graph, so `currentRoom.uid` has no outgoing edges even though the route
+    // we started with is still perfectly good. Fall back to the remaining plan --
+    // that is what a speedwalk does -- and only give up if the plan runs out.
+    if(walk.plan && walk.plan.length){
+      path = walk.plan;
+      if(!walk.blind){
+        walk.blind = true;
+        appendOutput('[nav] room not in the map yet; following the planned route\n','system');
+      }
+    } else {
+      finish(false, 'lost the route in ' + (currentRoom.name||'?'));
+      return;
+    }
+  } else {
+    walk.blind = false;
+  }
   if(!path.length){ finish(true); return; }
   walk.path = path;
+  // Keep the tail of the plan so a later re-path failure has something to follow.
+  walk.plan = path.slice(1);
 
   const next = path[0];
   const dir = next.dir;
@@ -231,6 +262,12 @@ export function onRoomChanged(){
   clearStepTimer();
 
   if(currentRoom.uid === walk.targetUid){ finish(true); return; }
+
+  // While following a planned route through rooms the map does not know by uid,
+  // "you are not where the map said" is the normal case, not an error: the
+  // skeleton's uids are placeholders. Correcting edges and counting re-paths
+  // there just burns the retry budget and aborts a walk that is going fine.
+  if(walk.blind){ walk.expectUid = null; }
 
   if(walk.expectUid && currentRoom.uid !== walk.expectUid){
     // We moved, but not where the map said we would. Correct the edge rather
