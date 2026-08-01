@@ -79,6 +79,19 @@ export function whereKeywords(s){
   return out;
 }
 
+/**
+ * The keyword to use when acting on this mob.
+ *
+ * `matchedKw` is set once `where` has returned a line whose NAME matches the
+ * target, so it is the only word proven to mean this creature. Everything that
+ * acts -- hunt, kill -- must prefer it: the head noun is often shared, and
+ * `kill worker` for "a relaxing worker" killed an injured goblin worker that
+ * happened to be in the same room.
+ */
+export function actionKw(t){
+  return (t && t.matchedKw) || whereKw(t && t.mob) || '';
+}
+
 export function whereKw(s){ return whereKeywords(s)[0] || ''; }
 
 export function huntTrickKw(s){
@@ -818,6 +831,27 @@ export function advanceWhereKeyword(t){
   return t.kwIndex < t.kwList.length;
 }
 
+/**
+ * Step to the next (keyword, ordinal) probe, breadth-first across keywords:
+ * ordinal 1 of every keyword, then ordinal 2 of every keyword, and so on.
+ *
+ * Depth-first on a single keyword spends the whole budget in the wrong place.
+ * The head noun is the first candidate, and for "a relaxing worker" that is
+ * `worker` -- which matches an injured goblin worker and several others, while
+ * `where 1.relaxing` returns her immediately. Confirmed live in Tilule, along
+ * with `manager` matching a pet store manager three ordinals running.
+ */
+export function nextWhereProbe(t){
+  if(!t.kwList){ t.kwList=whereKeywords(t.mob); t.kwIndex=0; }
+  t.kwIndex=(t.kwIndex||0)+1;
+  if(t.kwIndex >= t.kwList.length){
+    t.kwIndex=0;
+    t.whereIndex=(t.whereIndex||1)+1;
+    if(t.whereIndex > WHERE_ORD_MAX) return false;
+  }
+  return true;
+}
+
 /** The keyword currently being searched on. */
 export function activeWhereKw(t){
   if(!t.kwList) { t.kwList=whereKeywords(t.mob); t.kwIndex=0; }
@@ -888,7 +922,7 @@ export function xcpContinueCampaignHunt(t, inst){
   }, 3500);
   // ONE keyword plus the ordinal. The full name fails outright: `hunt 1.black
   // pegasus` answered "You seem unable to hunt that target for some reason."
-  const huntArg=inst.n+'.'+whereKw(t.mob);
+  const huntArg=inst.n+'.'+actionKw(t);
   sendCmd('hunt '+huntArg);
 }
 
@@ -978,7 +1012,7 @@ export function xcpFollowHuntInstance(t, navInst){
   // Follow hunt for the nav instance. Parse directional output from Aardwolf.
   sndState.pendingXcpNav={target:t, nav:navInst, at:Date.now()};
   appendOutput('[S&D] following hunt '+navInst.n+'...\n','quest');
-  sendCmd('hunt '+navInst.n+'.'+whereKw(t.mob));
+  sendCmd('hunt '+navInst.n+'.'+actionKw(t));
   sndState.xcpNav.huntTimeout=setTimeout(()=>{
     appendOutput('[S&D] hunt navigation timed out; trying direct path.\n','quest');
     sndState.pendingXcpNav=null;
@@ -1127,7 +1161,7 @@ export function xcpFollowHuntByKeyword(t, kw){
     return;
   }
   // `hunt` takes a single keyword, never the phrase.
-  const bareKw=whereKw(t.mob);
+  const bareKw=actionKw(t);
   sndState.pendingXcpNav={target:t, nav:null, kw:kw, at:Date.now()};
   appendOutput('[S&D] following hunt '+bareKw+'...\n','quest');
   sendCmd('hunt '+bareKw);
@@ -1286,11 +1320,12 @@ export function parseWhereOutput(text){
         t.whereAwaiting=null;
         // Nothing found on this keyword: it was the wrong one, not proof the mob
         // is absent. Try the next candidate before giving up on the target.
-        if(!t.whereInstances.length && advanceWhereKeyword(t)){
-          const kw=activeWhereKw(t);
-          appendOutput('[S&D] no match on "'+t.kwList[t.kwIndex-1]+'"; trying "'+kw+'"\n','quest');
-          t.whereIndex=1;
-          setTimeout(()=>xcpQueryWhereInstance(t, 1), 400);
+        // Nothing at this ordinal for this keyword. That is the end of the list
+        // for THIS keyword only -- another may still have a match at the same
+        // ordinal, so step across rather than concluding the mob is absent.
+        if(!t.whereInstances.length && nextWhereProbe(t)){
+          appendOutput('[S&D] nothing on that; trying '+t.whereIndex+'.'+activeWhereKw(t)+'\n','quest');
+          setTimeout(()=>xcpQueryWhereInstance(t, t.whereIndex), 400);
           continue;
         }
         appendOutput('[S&D] enumerated '+t.whereInstances.length+' instance(s)\n','quest');
@@ -1399,6 +1434,12 @@ export function parseWhereOutput(text){
     const trimmed = mobLower.length >= 20 && (
       targetMob.startsWith(mobLower) || fullMob.startsWith(mobLower));
     if(mi===fullMobWords.length || trimmed){
+      // Remember the keyword that actually identified this mob. It is the only
+      // one proven to mean *this* creature, and everything downstream -- hunt,
+      // kill -- must use it rather than falling back to the first candidate.
+      // `kill worker` for "a relaxing worker" killed an injured goblin worker
+      // standing in the same room; `relaxing` is what `where` had matched on.
+      t.matchedKw = activeWhereKw(t);
       instances.push({n, roomName, roomUid:null});
       continue;
     }
@@ -1425,24 +1466,16 @@ export function parseWhereOutput(text){
     clearTimeout(t.whereTimeout||null);
     const n=t.whereAwaiting;
     t.whereAwaiting=null;
-    if(n>=WHERE_ORD_MAX){
-      // Eight wrong mobs on this keyword means the keyword is wrong, not that
-      // the target is missing: `kobaloi` walked past eight other kobaloi while
-      // `trudes` finds the queen at once.
-      if(advanceWhereKeyword(t)){
-        const kw=activeWhereKw(t);
-        appendOutput('[S&D] "'+t.kwList[t.kwIndex-1]+'" matches too many others; trying "'+kw+'"\n','quest');
-        t.whereIndex=1;
-        setTimeout(()=>xcpQueryWhereInstance(t, 1), 400);
-        return;
-      }
-      appendOutput('[S&D] "'+t.mob+'" not found on any of: '+t.kwList.join(', ')+'\n','error');
+    if(!nextWhereProbe(t)){
+      appendOutput('[S&D] "'+t.mob+'" not found on any of: '+t.kwList.join(', ')
+        + ' (up to '+WHERE_ORD_MAX+' each)\n','error');
       t.located=true;
       setTimeout(()=>xcpStep(t), 100);
       return;
     }
-    appendOutput('[S&D] instance '+n+' is "'+wrongName[0]+'", not "'+t.mob+'" -- trying '+(n+1)+'\n','quest');
-    xcpQueryWhereInstance(t, n+1);
+    appendOutput('[S&D] that is "'+wrongName[0]+'", not "'+t.mob+'" -- trying '
+      + t.whereIndex+'.'+activeWhereKw(t)+'\n','quest');
+    xcpQueryWhereInstance(t, t.whereIndex);
     return;
   }
 
@@ -1598,7 +1631,7 @@ export function xcpKillTarget(t){
   // the game can target: standing in the throne room with Queen Trudes in front
   // of us, `kill "trudes tronesetter, queen of the kobaloi"` answered
   // "They aren't here."
-  const kw=whereKw(t.mob)||gmkw(t.mob);
+  const kw=actionKw(t)||gmkw(t.mob);
   appendOutput('[S&D] killing '+t.mob+' (kill '+kw+')...\n','quest');
   sendCmd('kill '+kw);
   setTimeout(()=>xcpVerifyKill(t, ()=>{
@@ -1633,7 +1666,7 @@ export function parseHuntOutput(text){
   if(foundPatterns.some(p=>p.test(clean))){
     hunt.found=true;
     appendOutput('[S&D] '+target.mob+' is here! Killing...\n','quest');
-    sendCmd('kill '+(whereKw(target.mob)||target.kw));
+    sendCmd('kill '+(actionKw(target)||target.kw));
     sndState.pendingHunt=null;
   } else if(notHerePatterns.some(p=>p.test(clean))){
     hunt.found=false;
@@ -1656,7 +1689,7 @@ export function xcpVerifyKill(t, onStillAlive){
 }
 
 export function xcpScheduleAction(t){
-  const kw1=whereKw(t.mob)||t.kw;
+  const kw1=actionKw(t)||t.kw;
   if(sndState.xcpMode==='ht') setTimeout(()=>sendCmd('hunt '+kw1), 600);
   else if(sndState.xcpMode==='qw') setTimeout(()=>sendCmd('where '+kw1), 600);
 }
