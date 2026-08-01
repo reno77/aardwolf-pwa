@@ -39,19 +39,45 @@ export function gmkw(s, areaName){
  * "a barn swallow". So the keyword must stay a bare word that an ordinal can be
  * prefixed to.
  */
-export function whereKw(s){
-  if(!s) return '';
-  const words=String(s).toLowerCase()
-    .replace(/^\s*(a|an|the)\s+/i,'')
-    .replace(/[^a-z0-9\s'-]/g,' ')
-    .split(/\s+/).filter(Boolean);
-  // The LAST word, not the first: mob names are "<adjective> <noun>", and the
-  // noun is what distinguishes them. Taking the first word gave `black` for
-  // "a black pegasus" and `large` for "a large apple tree" -- adjectives half the
-  // area shares, so the ordinal walk ran out before reaching the target. `pegasus`
-  // and `swallow` land on it in one or two tries.
-  return words[words.length-1]||'';
+const KW_STOP = new Set(['a','an','the','of','and','in','on','at','with','to','from','for','de','le']);
+
+/**
+ * Keywords to try for `where`/`hunt`, best first.
+ *
+ * One keyword is not enough. `where` matches on a keyword and answers with a
+ * single mob, so the wrong keyword means walking ordinals through a crowd that
+ * has nothing to do with the target: hunting "Trudes Tronesetter, Queen of the
+ * Kobaloi" on `kobaloi` walked 1..8 through the area's other kobaloi and gave
+ * up, when `trudes` finds her immediately.
+ *
+ *  1. A comma marks a proper name followed by a title. The name is unique; the
+ *     title's nouns are shared with everything else in the area.
+ *  2. Otherwise the head noun, which is the last word -- "a black pegasus" is
+ *     `pegasus`, not `black`, an adjective half the area shares.
+ *  3. Then any capitalised word, which is a name rather than a category.
+ *  4. Then whatever is left, so there is always something to fall back to.
+ */
+export function whereKeywords(s){
+  const raw = String(s || '').trim();
+  if(!raw) return [];
+  const out = [];
+  const clean = w => w.toLowerCase().replace(/[^a-z0-9'-]/g, '');
+  const push = w => {
+    const c = clean(w);
+    if(c && c.length >= 2 && !KW_STOP.has(c) && !out.includes(c)) out.push(c);
+  };
+  const body = raw.replace(/^\s*(a|an|the)\s+/i, '');
+  const words = body.split(/\s+/).filter(Boolean);
+
+  const comma = body.indexOf(',');
+  if(comma > 0) for(const w of body.slice(0, comma).split(/\s+/)) push(w);
+  if(words.length) push(words[words.length - 1]);
+  for(const w of words) if(/^[A-Z]/.test(w)) push(w);
+  for(const w of words) push(w);
+  return out;
 }
+
+export function whereKw(s){ return whereKeywords(s)[0] || ''; }
 
 export function huntTrickKw(s){
   // `hunt` takes ONE keyword, exactly like `where`. Passing the full name failed
@@ -703,13 +729,26 @@ export function xcpRunCampaignHunt(t){
   xcpContinueCampaignHunt(t, inst);
 }
 
+/** Move to the next candidate keyword. Returns false when they are exhausted. */
+export function advanceWhereKeyword(t){
+  if(!t.kwList) t.kwList=whereKeywords(t.mob);
+  t.kwIndex=(t.kwIndex==null?0:t.kwIndex)+1;
+  return t.kwIndex < t.kwList.length;
+}
+
+/** The keyword currently being searched on. */
+export function activeWhereKw(t){
+  if(!t.kwList) { t.kwList=whereKeywords(t.mob); t.kwIndex=0; }
+  return t.kwList[t.kwIndex||0] || whereKw(t.mob);
+}
+
 export function xcpQueryWhereInstance(t, n){
   t.whereIndex=n;
   t.whereAwaiting=n;
   // One keyword, not the phrase -- `where 1.barn swallow` is not a thing.
   // parseWhereOutput checks the returned NAME, so a same-keyword neighbour is
   // rejected rather than being walked to.
-  const kw1=whereKw(t.mob);
+  const kw1=activeWhereKw(t);
   appendOutput('[S&D] querying instance '+n+': where '+n+'.'+kw1+'\n','quest');
   sendCmd('where '+n+'.'+kw1);
   t.whereTimeout=setTimeout(()=>{
@@ -1136,6 +1175,15 @@ export function parseWhereOutput(text){
       if((sndState.xcpMode==='ch' || sndState.xcpMode==='ht') && t.whereAwaiting){
         clearTimeout(t.whereTimeout||null);
         t.whereAwaiting=null;
+        // Nothing found on this keyword: it was the wrong one, not proof the mob
+        // is absent. Try the next candidate before giving up on the target.
+        if(!t.whereInstances.length && advanceWhereKeyword(t)){
+          const kw=activeWhereKw(t);
+          appendOutput('[S&D] no match on "'+t.kwList[t.kwIndex-1]+'"; trying "'+kw+'"\n','quest');
+          t.whereIndex=1;
+          setTimeout(()=>xcpQueryWhereInstance(t, 1), 400);
+          continue;
+        }
         appendOutput('[S&D] enumerated '+t.whereInstances.length+' instance(s)\n','quest');
         t.located=true;
         setTimeout(()=>xcpStep(t), 100);
@@ -1234,7 +1282,14 @@ export function parseWhereOutput(text){
     for(const w of mobWords){
       if(mi<fullMobWords.length && w===fullMobWords[mi]) mi++;
     }
-    if(mi===fullMobWords.length){
+    // `where` prints the mob in a 30-character column, so a long name arrives
+    // cut short: "Trudes Tronesetter, Queen of the Kobaloi" comes back as
+    // "Trudes Tronesetter, Queen of t" and can never contain every word. Accept
+    // a column that is a prefix of the target -- with or without its article,
+    // since `where` keeps the article and t.mob may not.
+    const trimmed = mobLower.length >= 20 && (
+      targetMob.startsWith(mobLower) || fullMob.startsWith(mobLower));
+    if(mi===fullMobWords.length || trimmed){
       instances.push({n, roomName, roomUid:null});
       continue;
     }
@@ -1262,7 +1317,17 @@ export function parseWhereOutput(text){
     const n=t.whereAwaiting;
     t.whereAwaiting=null;
     if(n>=WHERE_ORD_MAX){
-      appendOutput('[S&D] "'+t.mob+'" not among the first '+WHERE_ORD_MAX+' matches; giving up on this target.\n','error');
+      // Eight wrong mobs on this keyword means the keyword is wrong, not that
+      // the target is missing: `kobaloi` walked past eight other kobaloi while
+      // `trudes` finds the queen at once.
+      if(advanceWhereKeyword(t)){
+        const kw=activeWhereKw(t);
+        appendOutput('[S&D] "'+t.kwList[t.kwIndex-1]+'" matches too many others; trying "'+kw+'"\n','quest');
+        t.whereIndex=1;
+        setTimeout(()=>xcpQueryWhereInstance(t, 1), 400);
+        return;
+      }
+      appendOutput('[S&D] "'+t.mob+'" not found on any of: '+t.kwList.join(', ')+'\n','error');
       t.located=true;
       setTimeout(()=>xcpStep(t), 100);
       return;
