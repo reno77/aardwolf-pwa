@@ -1492,15 +1492,28 @@ export function renderCampaign(){
     return;
   }
   const done=campaignTargets.filter(t=>t.completed).length;
+  const left=campaignTargets.length-done;
   const progressDiv=document.createElement('div');
-  progressDiv.innerHTML='<div style="background:var(--panel);padding:8px;border-radius:6px;margin-bottom:8px;">Progress: <b>'+done+'/'+campaignTargets.length+'</b> done</div>';
+  progressDiv.innerHTML='<div style="background:var(--panel);padding:8px;border-radius:6px;margin-bottom:8px;">'
+    + 'Progress: <b>'+done+'/'+campaignTargets.length+'</b> done'
+    + (done ? ' <span style="color:var(--green)">('+done+' hidden)</span>' : '')
+    + '</div>';
   list.appendChild(progressDiv);
+  if(!left){
+    list.innerHTML+='<div style="color:var(--green);text-align:center;padding:20px;">All targets killed &mdash; go and hand the campaign in.</div>';
+    return;
+  }
+  // Only what is still to be killed. A finished target stayed on the list
+  // labelled "dead", so after a kill the panel looked unchanged and the mob you
+  // had just killed was still sitting at the top. The count above says how many
+  // are done; the list itself is the work remaining.
   for(const t of campaignTargets){
+    if(t.completed) continue;
     const el=document.createElement('div');
     el.className='item';
-    el.style.background=t.completed?'rgba(46,204,113,.1)':'rgba(231,76,60,.05)';
+    el.style.background='rgba(231,76,60,.05)';
     const sub=t.type==='room' ? (t.roomName||'')+' in '+t.areaName : t.areaName;
-    el.innerHTML='<b>'+t.index+'. '+t.mob+'</b> <span style="color:var(--muted)">'+sub+'</span> <span style="float:right;color:'+(t.completed?'var(--green)':'var(--yellow)')+'">'+(t.is_dead?'dead':'live')+'</span>';
+    el.innerHTML='<b>'+t.index+'. '+t.mob+'</b> <span style="color:var(--muted)">'+sub+'</span>';
     el.onclick=()=>{xcpByIndex(t.index);};
     list.appendChild(el);
   }
