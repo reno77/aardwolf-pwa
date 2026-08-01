@@ -163,7 +163,9 @@ export async function initDb() {
   // Load Gaardian map database (read-only reference, not persisted with user data)
   await loadGaardianDb();
 
-  // Load user aliases from DB (overrides defaults)
+  // Aliases live in the table, not in state.js: seed the built-ins once, then
+  // the table is the only source of truth so a deletion actually sticks.
+  seedAliases();
   loadAliasesFromDb();
   
   // Load all triggers from DB into memory
@@ -826,10 +828,39 @@ export function lookupGaardianRoom(areaName, roomName) {
 }
 
 // Alias persistence helpers
+/**
+ * Copy the built-in aliases into the table once, so the table can become the
+ * only source of truth.
+ *
+ * `commandMap` in state.js ships a set of defaults, and loadAliasesFromDb used
+ * to merge DB rows *on top* of them. Deleting a built-in alias therefore removed
+ * the row and the in-memory copy but not the default, so it reappeared on the
+ * next load -- deleting `spellup` never stuck. User-created aliases deleted fine,
+ * which made the bug look intermittent.
+ *
+ * Guarded by a meta flag so deleting every alias does not re-seed them.
+ */
+export function seedAliases(){
+  if(!sqlDb) return;
+  try{
+    const seeded = sqlDb.exec("SELECT v FROM meta WHERE k='aliases_seeded'");
+    if(seeded.length && seeded[0].values.length) return;
+    for(const [name, expansion] of Object.entries(commandMap)){
+      // OR IGNORE: anything the user has already customised wins.
+      sqlDb.run('INSERT OR IGNORE INTO aliases(name, expansion) VALUES (?,?)', [name, expansion]);
+    }
+    sqlDb.run("INSERT OR REPLACE INTO meta(k,v) VALUES ('aliases_seeded','1')");
+    persistDb();
+  }catch(e){ console.error('seedAliases error', e); }
+}
+
 export function loadAliasesFromDb(){
   if(!sqlDb) return;
   try{
     const rows=sqlDb.exec("SELECT name, expansion FROM aliases");
+    // REPLACE the map rather than merging into it. Merging left every built-in
+    // alias permanently undeletable (see seedAliases above).
+    for(const k of Object.keys(commandMap)) delete commandMap[k];
     if(rows.length && rows[0].values){
       for(const r of rows[0].values){
         if(r[0] && r[1]) commandMap[r[0]]=r[1];

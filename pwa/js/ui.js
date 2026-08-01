@@ -247,10 +247,14 @@ export function saveAliasEdit(){
   const cmd=document.getElementById('ed-alias-cmd').value.trim();
   if(!name||!cmd){ appendOutput('Alias needs name and commands.\n','error'); return; }
   // Delete old if renaming
-  if(editingAliasName && editingAliasName!==name) delete commandMap[editingAliasName];
+  const renamedFrom = (editingAliasName && editingAliasName!==name) ? editingAliasName : null;
+  if(renamedFrom) delete commandMap[renamedFrom];
   commandMap[name]=cmd;
   // Persist to DB if available
   if(sqlDb){
+    // The rename only dropped the in-memory entry; the old row stayed in the
+    // table and came back on the next load under its original name.
+    if(renamedFrom) sqlDb.run("DELETE FROM aliases WHERE name=?",[renamedFrom]);
     sqlDb.run("INSERT OR REPLACE INTO aliases(name, expansion) VALUES (?,?)",[name,cmd]);
     persistDb();
   }

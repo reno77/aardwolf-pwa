@@ -283,24 +283,64 @@ export function renderMap(){
 
   // Draw rooms as compact colored cells, Fado-style.
   const roomList=[];
+  let here=null;
   for(const r of rawRooms){
     const p=toPx(r.dispX,r.dispY);
     const isCurrent=currentRoom.uid && r.uid===currentRoom.uid;
     const bw=cellW*scale-1, bh=cellH*scale-1;
     const rx=p.x-bw/2, ry=p.y-bh/2;
-    octx.fillStyle=isCurrent?'var(--green)':'#1a1a2e';
+    // The current room is drawn again after this loop so that nothing painted
+    // later can sit on top of it.
+    if(isCurrent){ here={p, rx, ry, bw, bh, r}; }
+    octx.fillStyle='#1a1a2e';
     octx.fillRect(rx,ry,bw,bh);
-    octx.strokeStyle=isCurrent?'#fff':'#7a9aba';
+    octx.strokeStyle='#7a9aba';
     octx.lineWidth=Math.max(1,0.8*scale);
     octx.strokeRect(rx,ry,bw,bh);
     // The room's full name, shrunk to fit the cell. This replaces the old
     // two-letter abbreviation; cells are sized for it (see cellW above).
-    octx.fillStyle=isCurrent?'#000':'#c3d3e2';
+    octx.fillStyle='#c3d3e2';
     octx.textAlign='center';
     octx.textBaseline='middle';
     const label=fitLabel(octx, stripAnsi(r.name||'').trim() || '?', bw-6, Math.min(11, 10*scale));
     octx.fillText(label, p.x, p.y);
     roomList.push({x:p.x,y:p.y,w:bw,h:bh,r:r});
+  }
+
+  // "You are here", drawn last and drawn loudly.
+  //
+  // This cell used to be filled with `var(--green)`. Canvas does not resolve CSS
+  // custom properties, and an invalid fillStyle assignment is silently ignored --
+  // so the current room was painted #1a1a2e like every other room and the only
+  // thing marking it was a white border.
+  if(here){
+    const {p, rx, ry, bw, bh}=here;
+    const pad=Math.max(3, 2.5*scale);
+    octx.save();
+    // Halo, so the room is findable without hunting for it.
+    octx.shadowColor='rgba(46,204,113,.9)';
+    octx.shadowBlur=Math.max(8, 10*scale);
+    octx.fillStyle='#2ecc71';
+    octx.fillRect(rx,ry,bw,bh);
+    octx.shadowBlur=0;
+    // Bright ring standing off the cell, plus a crisp inner edge.
+    octx.strokeStyle='#2ecc71';
+    octx.lineWidth=Math.max(2,1.5*scale);
+    octx.strokeRect(rx-pad, ry-pad, bw+pad*2, bh+pad*2);
+    octx.strokeStyle='#ffffff';
+    octx.lineWidth=Math.max(2,1.8*scale);
+    octx.strokeRect(rx,ry,bw,bh);
+    // Label in black bold: green on dark text is unreadable.
+    octx.fillStyle='#000';
+    octx.textAlign='center';
+    octx.textBaseline='middle';
+    // fitLabel picks a size that fits and leaves it on ctx.font; keep that size
+    // and only add the weight, or bold text overflows the cell. Slightly tighter
+    // budget than the normal cells, since bold is wider.
+    const label=fitLabel(octx, stripAnsi(here.r.name||'').trim() || '?', bw-9, Math.min(11, 10*scale));
+    octx.font='bold '+octx.font;
+    octx.fillText(label, p.x, p.y);
+    octx.restore();
   }
   mapState.roomList=roomList;
 

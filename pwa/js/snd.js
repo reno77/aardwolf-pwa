@@ -236,6 +236,14 @@ export function parseCpCheckOutput(text){
       sndState._cpCheckTmp.push({mob:m[1].trim(), loc:loc, is_dead:dead});
       continue;
     }
+    // When every target is dead, `cp check` prints no "still have to kill" lines
+    // at all -- only the timer. Without this the block never closed, so a
+    // finished campaign was never shown as finished.
+    if(!sndState._inCpCheck && campaignTargets.length
+       && /left to finish this campaign/i.test(clean)){
+      mergeCpCheck([]);
+      continue;
+    }
     if(sndState._inCpCheck){
       sndState._inCpCheck=false;
       if(campaignTargets.length===0){
@@ -329,16 +337,41 @@ export function buildCpTargetsFromCheck(checkList){
   renderCampaign();
 }
 
+/** Does this `cp check` line refer to the same mob as this target? */
+function cpMobMatches(target, entry){
+  const a=String(target.mob||'').toLowerCase();
+  const b=String(entry.mob||'').toLowerCase();
+  if(!a || !b) return false;
+  return a===b || a.includes(b) || b.includes(a);
+}
+
 export function mergeCpCheck(checkList){
   for(const c of checkList){
-    const t=campaignTargets.find(x=>x.mob.toLowerCase()===c.mob.toLowerCase() || c.mob.toLowerCase().includes(x.mob.toLowerCase()) || x.mob.toLowerCase().includes(c.mob.toLowerCase()));
+    const t=campaignTargets.find(x=>cpMobMatches(x, c));
     if(t){
       t.is_dead=c.is_dead;
       t.completed=c.is_dead;
       if(t.is_dead) t.progress=t.total;
     }
   }
-  appendOutput('[S&D] cp check merged: '+checkList.length+' entries\n','quest');
+  // `cp check` lists ONLY what is still outstanding -- confirmed live: after
+  // killing the barn swallow and the black pegasus, both simply vanished from
+  // the output, leaving 8 of the original 10 lines. So anything we know about
+  // that the check did not mention is dead.
+  //
+  // The loop above could never mark anything complete, because it only ever
+  // looked at mobs that were still ALIVE. That is why Refresh kept showing a
+  // killed mob as target #1.
+  let done=0;
+  for(const t of campaignTargets){
+    if(t.is_dead) continue;
+    if(checkList.some(c => cpMobMatches(t, c))) continue;
+    t.is_dead=true; t.completed=true; t.progress=t.total;
+    done++;
+  }
+  appendOutput('[S&D] cp check: '+checkList.length+' still to kill'
+    + (done ? ', '+done+' newly done' : '')
+    + ' ('+campaignTargets.filter(t=>t.completed).length+'/'+campaignTargets.length+' complete)\n','quest');
   renderCampaign();
 }
 
