@@ -97,6 +97,29 @@ export function findPath(fromUid, toUid, opts){
 /** True when `dir` is a command to type rather than a compass direction. */
 export function isCustomExit(dir){ return String(dir).length > 1; }
 
+/**
+ * Print what Gaardian knows about getting past a blocked exit.
+ *
+ * The map records the key, where to buy it and for how much -- 882 exits across
+ * 132 areas carry a note. Confirmed at the Keep of the Kobaloi: "a Kobalos
+ * palace pass ... purchased from Palgern Cavedwoller for 50 gold", in A Cramped
+ * Cave. Saying only "the way is guarded" wasted information already on disk.
+ */
+function reportKeyFor(fromUid, dir){
+  if(!sqlDb || !fromUid || !dir) return false;
+  try {
+    const r = sqlDb.exec('SELECT key_name, key_desc, key_room FROM exits WHERE from_uid=? AND dir=?',
+      [String(fromUid), dir]);
+    if(!r.length || !r[0].values.length) return false;
+    const [keyName, keyDesc, keyRoom] = r[0].values[0];
+    if(!keyName && !keyDesc) return false;
+    appendOutput('[nav] you need ' + (keyName || 'a key') + ' for that way'
+      + (keyRoom ? ' -- try "' + keyRoom + '"' : '') + '\n', 'quest');
+    if(keyDesc) appendOutput('       ' + keyDesc + '\n', 'quest');
+    return true;
+  } catch(e){ return false; }
+}
+
 // =============================================================================
 // THE WALKER
 // =============================================================================
@@ -316,8 +339,8 @@ const BLOCKED = [
   {re:/^Alas, you cannot go that way/im,            msg:'cannot go that way', deadEnd:true},
   {re:/^The door is closed/im,                      msg:null, open:true},
   {re:/is closed\.$/im,                             msg:null, open:true},
-  {re:/^The door is locked/im,                      msg:'the door is locked'},
-  {re:/^You do not have a key for/im,               msg:'no key for that door'},
+  {re:/^The door is locked/im,                      msg:'the door is locked', locked:true},
+  {re:/^You do not have a key for/im,               msg:'no key for that door', locked:true},
   {re:/^You must be standing first/im,              msg:null, stand:true},
   {re:/^You need to use a boat, fly, or swim/im,    msg:'need a boat or flight'},
   {re:/^You are regaining balance/im,               msg:null, retry:true},
@@ -355,6 +378,7 @@ export function onMudText(text){
       walk.timer = setTimeout(step, 800);
       return;
     }
+    if(b.locked) reportKeyFor(walk.lastFrom, walk.lastDir);
     if(b.stand){ sendCmdRaw('stand'); clearStepTimer(); walk.timer = setTimeout(step, 800); return; }
     if(b.retry){ clearStepTimer(); walk.timer = setTimeout(step, 1200); return; }
     // The exit is real but you are not allowed through it. Park it at level 999
@@ -370,6 +394,7 @@ export function onMudText(text){
       // can say what actually stopped us instead of "lost the route".
       walk.gateNote = (b.msg || 'the way is guarded') + ' ('
         + walk.lastDir + ' from ' + (currentRoom.name || 'here') + ')';
+      reportKeyFor(walk.lastFrom, walk.lastDir);
       if(++walk.repaths <= MAX_REPATH){
         walk.plan = null;
         walk.blind = false;

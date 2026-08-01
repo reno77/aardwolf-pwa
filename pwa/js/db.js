@@ -55,6 +55,8 @@ const SCHEMA_SQL = `
     level    INTEGER DEFAULT 0,   -- min level to use; 999 = never auto-path
     door     INTEGER DEFAULT 0,   -- 0 none, 1 door, 2 locked
     key_name TEXT,
+    key_desc TEXT,                -- how to get past it, from Gaardian
+    key_room TEXT,                -- where the key comes from
     PRIMARY KEY(from_uid, dir));
   CREATE INDEX IF NOT EXISTS idx_exits_from ON exits(from_uid);
   CREATE INDEX IF NOT EXISTS idx_exits_to   ON exits(to_uid);
@@ -157,11 +159,27 @@ export async function initDb() {
     appendOutput(`[DB] Upgraded schema v${migratedFrom} -> v${SCHEMA_VERSION}; map rebuilt, aliases, triggers and buttons kept\n`, 'system');
   }
 
+  // Columns added after the first release; ALTER is the only way to reach an
+  // exits table that already exists (CREATE TABLE IF NOT EXISTS will not).
+  let addedKeyCols = false;
+  for(const col of ['key_desc TEXT', 'key_room TEXT']){
+    try { sqlDb.run('ALTER TABLE exits ADD COLUMN ' + col); addedKeyCols = true; }
+    catch(e){ /* already there */ }
+  }
+
   seedAreas();   // minimal area keyword seed; /areas harvests the real list
   initInventory();
 
   // Load Gaardian map database (read-only reference, not persisted with user data)
   await loadGaardianDb();
+
+  // Areas imported before the key columns existed still have the exits; only the
+  // notes are missing. Fill those in rather than re-importing, which would undo
+  // the room promotions.
+  if(addedKeyCols){
+    const n = backfillKeyNotes();
+    if(n) appendOutput('[Gaardian] Added key notes to ' + n + ' exit(s)\n', 'system');
+  }
 
   // Aliases live in the table, not in state.js: seed the built-ins once, then
   // the table is the only source of truth so a deletion actually sticks.
@@ -352,6 +370,12 @@ export function importGaardianArea(gaardianAreaid, aardwolfAreaName, force){
       inserted++;
     }
 
+    // Exits FIRST, then promotion. The other way round, a room promoted here
+    // had no Gaardian exits to merge yet, so its door and key columns -- the
+    // note saying which pass you need and where to buy it -- were silently
+    // lost for precisely the rooms you have stood in, the only ones that can
+    // ever block you.
+    const stats = importGaardianExits(gaardianAreaid);
     // Promote any already-known Aardwolf rooms whose names match rooms in this
     // Gaardian area, linking the live graph to the imported one.
     //
@@ -389,7 +413,6 @@ export function importGaardianArea(gaardianAreaid, aardwolfAreaName, force){
       }
     }catch(e){ console.error('promote existing rooms error', e); }
 
-    const stats = importGaardianExits(gaardianAreaid);
     markAreaImported(gaardianAreaid);
     appendOutput(`[Gaardian] Imported ${inserted} rooms and ${stats.total} exits for ${areaName}`
       + (stats.custom ? ` (${stats.custom} custom, ${stats.doors} doors)` : '')
@@ -420,14 +443,87 @@ const GAARDIAN_DIRS = {0:'n', 1:'e', 2:'s', 3:'w', 4:'u', 5:'d'};
 // they still show on the map but never appear in a route.
 const UNTYPEABLE = /^(mobprog|special|unknown)$|\(/i;
 
+// Gaardian records how to get past a locked door or a guard -- what the key is,
+// where to buy it and for how much -- in exits.key_desc/key_room. 882 exits
+// across 132 areas carry one, and none of it was being read: a blocked walk
+// could only say "the way is guarded" when the database already knew the answer.
+// key_desc is a scrap of HTML; key_room is a reference of the form "rooms[12]".
+function cleanKeyDesc(html){
+  if(!html) return null;
+  const t = String(html)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return t || null;
+}
+
+function resolveKeyRoom(areaid, ref){
+  if(!ref) return null;
+  const m = String(ref).match(/rooms\[(\d+)\]/i);
+  if(!m) return String(ref);
+  try {
+    const r = gaardianDb.exec('SELECT roomname FROM rooms WHERE areaid=? AND local_id=?',
+      [areaid, parseInt(m[1])]);
+    if(r.length && r[0].values.length) return String(r[0].values[0][0]);
+  } catch(e){ /* fall through to the raw reference */ }
+  return null;
+}
+
+/**
+ * Fill in key notes for areas imported before those columns existed.
+ *
+ * A plain re-import would undo the promotion work -- it re-creates gaardian:
+ * rows for rooms already merged into live uids -- so this touches only the two
+ * new columns, on both the skeleton uid and the promoted one.
+ */
+export function backfillKeyNotes(){
+  if(!sqlDb || !gaardianDb) return 0;
+  let n = 0;
+  try {
+    const areas = sqlDb.exec('SELECT areaid FROM gaardian_imported');
+    for(const [areaid] of (areas[0]?.values || [])){
+      const g = gaardianDb.exec(
+        `SELECT from_room, exit_type, exit_action, key_name, key_desc, key_room
+           FROM exits WHERE areaid=? AND key_desc IS NOT NULL AND key_desc!=''`, [areaid]);
+      for(const [fromRoom, exitType, exitAction, keyName, keyDesc, keyRoom] of (g[0]?.values || [])){
+        let dir = null;
+        if(exitType >= 0 && exitType <= 5) dir = GAARDIAN_DIRS[exitType];
+        else if(exitType === 6 && exitAction) dir = 'enter ' + String(exitAction).trim().toLowerCase();
+        else if(exitType === 7 && exitAction) dir = String(exitAction).trim().toLowerCase();
+        if(!dir) continue;
+        const uids = [gaardianUid(areaid, fromRoom)];
+        try {
+          const m = sqlDb.exec(
+            'SELECT aardwolf_uid FROM room_gaardian_map WHERE gaardian_areaid=? AND gaardian_local_id=?',
+            [areaid, fromRoom]);
+          if(m.length && m[0].values.length) uids.push(String(m[0].values[0][0]));
+        } catch(e){ /* no map row yet */ }
+        for(const u of uids){
+          sqlDb.run(
+            `UPDATE exits SET key_name=COALESCE(key_name, ?), key_desc=?, key_room=?
+              WHERE from_uid=? AND dir=?`,
+            [keyName || null, cleanKeyDesc(keyDesc), resolveKeyRoom(areaid, keyRoom), u, dir]);
+          n++;
+        }
+      }
+    }
+  } catch(e){ console.error('backfillKeyNotes error', e); }
+  return n;
+}
+
 export function importGaardianExits(gaardianAreaid){
   const stats = {total:0, custom:0, doors:0, skipped:0};
   const res = gaardianDb.exec(
     `SELECT from_room, to_room, exit_type, exit_action, target_areaid,
-            door_type, key_name, random
+            door_type, key_name, random, key_desc, key_room
        FROM exits WHERE areaid=?`, [gaardianAreaid]);
   const rows = res[0]?.values || [];
-  for(const [fromRoom, toRoom, exitType, exitAction, targetAreaid, doorType, keyName, random] of rows){
+  for(const [fromRoom, toRoom, exitType, exitAction, targetAreaid, doorType, keyName, random,
+             keyDesc, keyRoom] of rows){
     // Random exits cannot be routed through -- you don't know where you land.
     if(random){ stats.skipped++; continue; }
 
@@ -459,9 +555,10 @@ export function importGaardianExits(gaardianAreaid){
 
     const door = doorType || 0;
     sqlDb.run(
-      `INSERT OR REPLACE INTO exits(from_uid, dir, to_uid, level, door, key_name)
-       VALUES (?,?,?,?,?,?)`,
-      [gaardianUid(gaardianAreaid, fromRoom), dir, toUid, level, door, keyName || null]);
+      `INSERT OR REPLACE INTO exits(from_uid, dir, to_uid, level, door, key_name, key_desc, key_room)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [gaardianUid(gaardianAreaid, fromRoom), dir, toUid, level, door, keyName || null,
+       cleanKeyDesc(keyDesc), resolveKeyRoom(gaardianAreaid, keyRoom)]);
     stats.total++;
     if(dir.length > 1) stats.custom++;
     if(door) stats.doors++;
@@ -529,6 +626,16 @@ function cascadeAnchors(seedUid, areaid, seedLocalId, areaName, now){
 export function promoteGaardianRoom(aardwolfUid, gaardianAreaid, gaardianLocalId, aardwolfAreaName){
   if(!sqlDb) return;
   const oldUid = gaardianUid(gaardianAreaid, gaardianLocalId);
+  // The GMCP row wins on to_uid -- it is observed rather than inferred -- but it
+  // carries no door or key information, and the merge below drops the Gaardian
+  // row it collided with. That lost the "you need a pass, buy it here" note for
+  // exactly the rooms you have actually stood in, which are the only ones you
+  // can be blocked in. Keep those columns before they go.
+  let carried = [];
+  try {
+    const r = sqlDb.exec('SELECT dir, door, key_name, key_desc, key_room FROM exits WHERE from_uid=?', [oldUid]);
+    carried = r.length ? r[0].values : [];
+  } catch(e){ /* nothing to carry */ }
   try {
     // Merge Gaardian-preloaded room into the real Aardwolf room record.
     sqlDb.run("UPDATE OR IGNORE rooms SET uid=? WHERE uid=?", [aardwolfUid, oldUid]);
@@ -550,6 +657,17 @@ export function promoteGaardianRoom(aardwolfUid, gaardianAreaid, gaardianLocalId
     sqlDb.run("DELETE FROM exits WHERE from_uid=?", [oldUid]);
     // to_uid is not part of the key, so this one cannot conflict.
     sqlDb.run("UPDATE exits SET to_uid=? WHERE to_uid=?", [aardwolfUid, oldUid]);
+    // Put the door and key columns back onto whichever row survived.
+    for(const [dir, door, keyName, keyDesc, keyRoom] of carried){
+      if(!door && !keyName && !keyDesc) continue;
+      sqlDb.run(
+        `UPDATE exits SET door=COALESCE(NULLIF(door,0), ?),
+                          key_name=COALESCE(key_name, ?),
+                          key_desc=COALESCE(key_desc, ?),
+                          key_room=COALESCE(key_room, ?)
+          WHERE from_uid=? AND dir=?`,
+        [door || 0, keyName || null, keyDesc || null, keyRoom || null, aardwolfUid, dir]);
+    }
   } catch(e){ console.error('promoteGaardianRoom error', e); }
 }
 

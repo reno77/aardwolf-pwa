@@ -106,8 +106,15 @@ export function processGMCP(key, data){
     // are currently open, so this never overwrites an imported custom exit.
     for(const [dir, toUid] of Object.entries(exits)){
       if(toUid && toUid!=='0' && toUid!=='?'){
-        sqlDb.run(`INSERT OR REPLACE INTO exits(from_uid, dir, to_uid)
-          VALUES (?,?,?)`, [uid, dir, String(toUid)]);
+        // UPSERT, not INSERT OR REPLACE. REPLACE deletes the row and inserts a
+        // new one, so every column not named here -- level, door, key_name,
+        // key_desc, key_room -- was reset to NULL. Since room.info arrives on
+        // every single room change, that wiped the door and key data the moment
+        // after the Gaardian import supplied it, and re-armed exits the walker
+        // had just parked at level 999 for being guarded.
+        sqlDb.run(`INSERT INTO exits(from_uid, dir, to_uid) VALUES (?,?,?)
+          ON CONFLICT(from_uid, dir) DO UPDATE SET to_uid=excluded.to_uid`,
+          [uid, dir, String(toUid)]);
       }
     }
     // Cross-reference with Gaardian map database and import the whole area
