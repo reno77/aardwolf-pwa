@@ -105,6 +105,12 @@ export function isCustomExit(dir){ return String(dir).length > 1; }
  * palace pass ... purchased from Palgern Cavedwoller for 50 gold", in A Cramped
  * Cave. Saying only "the way is guarded" wasted information already on disk.
  */
+// The last exit that refused us, with whatever Gaardian knows about getting
+// through it. Read by snd.js so the campaign helper can go and buy the key.
+let lastGate = null;
+export function lastGateInfo(){ return lastGate; }
+export function clearGateInfo(){ lastGate = null; }
+
 function reportKeyFor(fromUid, dir){
   if(!sqlDb || !fromUid || !dir) return false;
   try {
@@ -113,6 +119,8 @@ function reportKeyFor(fromUid, dir){
     if(!r.length || !r[0].values.length) return false;
     const [keyName, keyDesc, keyRoom] = r[0].values[0];
     if(!keyName && !keyDesc) return false;
+    lastGate = {fromUid: String(fromUid), dir, keyName: keyName || null,
+                keyDesc: keyDesc || null, keyRoom: keyRoom || null};
     appendOutput('[nav] you need ' + (keyName || 'a key') + ' for that way'
       + (keyRoom ? ' -- try "' + keyRoom + '"' : '') + '\n', 'quest');
     if(keyDesc) appendOutput('       ' + keyDesc + '\n', 'quest');

@@ -3,7 +3,7 @@
 import { findAreaAnywhere, gaardianDb, resolveRoomByNameAnywhere, sqlDb } from './db.js';
 import { currentRoom, charState, charLevel, STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
-import { findPath, walkTo, cancelWalk, isWalking } from './nav.js';
+import { findPath, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo } from './nav.js';
 import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 // --- state owned by this module ---
@@ -15,6 +15,8 @@ export let lastCampaignRaw='';
 
 // How many `where <n>.<kw>` ordinals to walk before giving up on a target.
 const WHERE_ORD_MAX=8;
+// How long to wait for a `where` reply before asking again.
+const WHERE_REPLY_MS=9000;
 
 // =============================================================================
 // SEARCH AND DESTROY CAMPAIGN HELPER (ported from Search_and_Destroy_v2.0.xml)
@@ -124,9 +126,66 @@ function awaitAreaThen(areaName, fn, tries){
   setTimeout(()=>awaitAreaThen(areaName, fn, tries-1), 1500);
 }
 
+/**
+ * Buy the key a gate wants, then carry on to where we were going.
+ *
+ * Gaardian names the key, the room it comes from and the price; the seller is in
+ * the prose ("purchased from Palgern Cavedwoller for 5 gold"). That is enough to
+ * walk to the shop, buy it and resume, instead of stopping with "you need an
+ * entry pass" and making the player do it by hand.
+ *
+ * Deliberately narrow: it buys only the item the map named, only from the room
+ * the map named, and only once per gate per session.
+ */
+const boughtKeys = new Set();
+
+function keyKeyword(keyName){
+  // 'a Kobalos palace pass' -> 'pass'. Shops match on a keyword like everything
+  // else in this game.
+  const w = String(keyName||'').toLowerCase()
+    .replace(/^\s*(a|an|the)\s+/,'').split(/\s+/).filter(Boolean);
+  return w.length ? w[w.length-1] : '';
+}
+
+function tryBuyKeyThen(t, gate, resume){
+  if(!gate || !gate.keyName || !gate.keyRoom) return false;
+  const tag = gate.fromUid + '|' + gate.dir;
+  if(boughtKeys.has(tag)) return false;         // already tried this gate
+  const shop = resolveRoomByNameAnywhere(gate.keyRoom, t && t.areaName);
+  if(!shop || !shop.uid) return false;
+  boughtKeys.add(tag);
+
+  const kw = keyKeyword(gate.keyName);
+  const price = (String(gate.keyDesc||'').match(/for\s+([\d,]+)\s+gold/i) || [])[1];
+  appendOutput('[S&D] fetching '+gate.keyName+' from '+gate.keyRoom
+    + (price ? ' ('+price+' gold)' : '') + '...\n','quest');
+
+  gotoRoomUid(shop.uid, ()=>{
+    sendCmdRaw('buy ' + kw);
+    // Give the shop a moment to answer, then go back and take the gate again.
+    setTimeout(()=>{
+      appendOutput('[S&D] bought '+gate.keyName+'; resuming\n','quest');
+      // The exit was parked at 999 when it refused us; it is usable now.
+      try {
+        sqlDb.run('UPDATE exits SET level=0 WHERE from_uid=? AND dir=? AND level=999',
+          [gate.fromUid, gate.dir]);
+      } catch(e){ console.error(e); }
+      clearGateInfo();
+      resume();
+    }, 1500);
+  }, {noAreaHop:true});
+  return true;
+}
+
 export function gotoRoomUid(toUid, onDone, opts){
   if(!toUid) return;
   walkTo(toUid, onDone, (reason)=>{
+    // Blocked by a gate whose key the map knows how to get? Go and get it.
+    const gate = lastGateInfo();
+    if(gate && !(opts && opts.noKeyBuy)){
+      const t = sndState.pendingXcp;
+      if(tryBuyKeyThen(t, gate, ()=>gotoRoomUid(toUid, onDone, {...(opts||{}), noKeyBuy:true}))) return;
+    }
     // A room can be present in the local map and still be unreachable. Importing
     // an area from Gaardian does not connect it to anything you have actually
     // walked, so it sits as an island -- and from a clan hall there is no mapped
@@ -751,14 +810,24 @@ export function xcpQueryWhereInstance(t, n){
   const kw1=activeWhereKw(t);
   appendOutput('[S&D] querying instance '+n+': where '+n+'.'+kw1+'\n','quest');
   sendCmd('where '+n+'.'+kw1);
+  // 5s was too tight: over the tunnel the reply to `where 1.trudes` regularly
+  // landed just after the deadline, so enumeration reported "0 instances" and
+  // gave up on a mob that was standing in the next room. Wait longer, and ask
+  // once more before concluding there is nothing there.
   t.whereTimeout=setTimeout(()=>{
-    if(t.whereAwaiting===n){
-      appendOutput('[S&D] where '+n+' timed out; stopping enumeration at '+(n-1)+' instance(s).\n','quest');
-      t.whereAwaiting=null;
-      t.located=true;
-      if(sndState.pendingXcp) xcpStep(sndState.pendingXcp);
+    if(t.whereAwaiting!==n) return;
+    if(!t.whereRetried){
+      t.whereRetried=true;
+      appendOutput('[S&D] no reply to where '+n+'; asking again\n','quest');
+      xcpQueryWhereInstance(t, n);
+      return;
     }
-  }, 5000);
+    t.whereRetried=false;
+    appendOutput('[S&D] where '+n+' timed out; stopping enumeration at '+(n-1)+' instance(s).\n','quest');
+    t.whereAwaiting=null;
+    t.located=true;
+    if(sndState.pendingXcp) xcpStep(sndState.pendingXcp);
+  }, WHERE_REPLY_MS);
 }
 
 export function xcpRunHuntTrick(t){
@@ -1364,6 +1433,7 @@ export function parseWhereOutput(text){
     if(use.length>0){
       const inst=use[0];
       inst.n=n;
+      t.whereRetried=false;
       t.whereInstances.push(inst);
       t.whereIndex=n+1;
       appendOutput('[S&D] instance '+n+' found: '+inst.roomName+'\n','quest');
@@ -1420,6 +1490,19 @@ export function parseHuntTrickOutput(text){
     return;
   }
 
+  // `hunt` answers "<mob> is here!" when the mob is in the room you are already
+  // standing in -- it never has to hunt at all, so this says nothing about
+  // whether the mob is the campaign target. It just means we have arrived.
+  // None of the branches below matched it, so the helper stopped dead with the
+  // Queen of the Kobaloi standing in front of it.
+  if(lines.some(line=>/\bis here\b/i.test(line) && !/is not here/i.test(line))){
+    appendOutput('[S&D] '+target.mob+' is in this room.\n','quest');
+    target.campaignInstance=inst;
+    sndState.pendingHuntTrick=null;
+    xcpKillTarget(target);
+    return;
+  }
+
   // Directional hunt: only from explicit hunt-result lines like "heading east"
   const dirLine=lines.find(line=>/(confident|heading|trail)/i.test(line) && /(?:heading|leading|fled|went|go|to|toward|direction)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i.test(line));
   if(dirLine){
@@ -1471,7 +1554,11 @@ export function xcpContinueHuntTrick(t, inst){
 
 export function xcpKillTarget(t){
   if(t.is_dead) return;
-  const kw=gmkw(t.mob);
+  // A keyword, like `where` and `hunt`. The quoted full name is not something
+  // the game can target: standing in the throne room with Queen Trudes in front
+  // of us, `kill "trudes tronesetter, queen of the kobaloi"` answered
+  // "They aren't here."
+  const kw=whereKw(t.mob)||gmkw(t.mob);
   appendOutput('[S&D] killing '+t.mob+' (kill '+kw+')...\n','quest');
   sendCmd('kill '+kw);
   setTimeout(()=>xcpVerifyKill(t, ()=>{
@@ -1506,7 +1593,7 @@ export function parseHuntOutput(text){
   if(foundPatterns.some(p=>p.test(clean))){
     hunt.found=true;
     appendOutput('[S&D] '+target.mob+' is here! Killing...\n','quest');
-    sendCmd('kill '+target.kw);
+    sendCmd('kill '+(whereKw(target.mob)||target.kw));
     sndState.pendingHunt=null;
   } else if(notHerePatterns.some(p=>p.test(clean))){
     hunt.found=false;
