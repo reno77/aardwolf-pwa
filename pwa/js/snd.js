@@ -1251,9 +1251,21 @@ export function parseWhereOutput(text){
   // Load candidate room names for the target area to do suffix matching.
   const areaRoomNames=collectRoomNamesForArea(t.areaName);
 
+  // Aardwolf wraps room descriptions in {rdesc}...{/rdesc} and the ASCII map in
+  // <MAPSTART>...<MAPEND>. Those arrive interleaved with a pending `where`, and
+  // the fixed-width split below happily reads a line of prose as "30 characters
+  // of mob name, then a room" -- "surrounded by the roots of the" was accepted
+  // as a mob in the Palace of Song. Never read anything inside a tagged block.
+  let inBlock=false;
   for(const rawLine of lines){
     const line=rawLine.trim();
     if(!line) continue;
+    if(/^\{(rdesc|roomchars|invdata|eqdata|invdetails|help|statmod|exits)\b/i.test(line)
+       || /^<MAPSTART>/i.test(line)){ inBlock=true; continue; }
+    if(/^\{\/(rdesc|roomchars|invdata|eqdata|invdetails|help)\}/i.test(line)
+       || /^<MAPEND>/i.test(line)){ inBlock=false; continue; }
+    if(inBlock) continue;
+    if(line.startsWith('{') || line.startsWith('<')) continue;
     // Skip echo of the command itself and informational/no-match lines.
     if(/^where\s/i.test(line)) continue;
     if(/There is no|around here|can't find any|no such/i.test(line)){
