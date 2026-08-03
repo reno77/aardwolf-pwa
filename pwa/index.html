@@ -6,7 +6,10 @@
 <meta name="theme-color" content="#0a0a12">
 <title>AardClient</title>
 <link rel="manifest" href="/static/manifest.json">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js" crossorigin="anonymous"></script>
+<!-- Vendored, not from cdnjs: the Android build has no network path to a CDN at
+     startup and an offline first paint should not depend on one. Same file,
+     sql.js 1.8.0; sql-wasm.wasm sits beside it (see locateFile in db.js). -->
+<script src="/static/vendor/sql-wasm.js"></script>
 <style>
   :root{--bg:#0a0a12;--panel:#13131f;--accent:#1e1e2e;--text:#e0e0e0;--muted:#6c6c80;--green:#2ecc71;--red:#e74c3c;--yellow:#f1c40f;--blue:#3498db;--cyan:#48dbfb;}
   html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;}

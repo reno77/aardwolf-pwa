@@ -8,7 +8,8 @@ import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseW
          parseRuntoOutput, parseAutoHuntOutput, huntTo, stopAutoHunt, setXcpMode, sndState, xcpByIndex, xcpNext } from './snd.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
-import { WS_URL, commandMap } from './state.js';
+import { commandMap } from './state.js';
+import { openTransport } from './transport.js';
 import { appendOutput, checkQuest, clearOutput, maxLines, processTriggers, setMaxLines, togglePanel, triggered } from './ui.js';
 // --- state owned by this module ---
 export let ws=null;
@@ -308,7 +309,9 @@ export async function doConnect(force){
   if(offlineShowTimer){ clearTimeout(offlineShowTimer); offlineShowTimer=null; }
   appendOutput('Connecting...\n','system');
   try{
-    ws=new WebSocket(WS_URL);
+    // A WebSocket to the relay in a browser; the native TCP bridge in the
+    // Android app. Same JSON protocol either way -- see transport.js.
+    ws=openTransport();
     ws.onopen=()=>{
       connected=true;
       gmcpRequested=false;

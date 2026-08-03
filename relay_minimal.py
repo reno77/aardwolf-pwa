@@ -383,6 +383,11 @@ CONTENT_TYPES = {
     '.json': 'application/json; charset=utf-8',
     '.css':  'text/css; charset=utf-8',
     '.db':   'application/octet-stream',
+    # sql.js is vendored under pwa/vendor now rather than pulled from cdnjs.
+    # WebAssembly.instantiateStreaming refuses anything but application/wasm and
+    # falls back to a slower buffered compile with a console warning, so serve
+    # the type it actually wants.
+    '.wasm': 'application/wasm',
 }
 
 def serve(relpath):

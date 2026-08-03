@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AardClient" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/aard_bg</item>
+        <item name="android:statusBarColor">@color/aard_bg</item>
+        <item name="android:navigationBarColor">@color/aard_bg</item>
+    </style>
+</resources>

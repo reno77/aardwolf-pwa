@@ -1,0 +1,5 @@
+# gradlew is a shell script. Checked out with CRLF it fails on Linux and macOS
+# with a "bad interpreter" error, so pin it to LF regardless of platform.
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+*.jar binary

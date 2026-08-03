@@ -6,6 +6,7 @@ import { commandMap } from './state.js';
 import { seedAreas } from './areas.js';
 import { initInventory } from './dinv.js';
 import { appendOutput, renderTriggers } from './ui.js';
+import { isNativeHost, nativeOpenFile, nativeSaveFile } from './transport.js';
 // --- state owned by this module ---
 export let sqlDb=null; // Browser SQLite (live/discovered map)
 export let fadoTriggers=[]; // populated from SQLite on init
@@ -13,7 +14,7 @@ export let fadoTriggers=[]; // populated from SQLite on init
 // =============================================================================
 // SQLITE INITIALIZATION
 // =============================================================================
-export let initSqlPromise = initSqlJs({ locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}` });
+export let initSqlPromise = initSqlJs({ locateFile: file => `/static/vendor/${file}` });
 
 // Swap in a database loaded from a file. `sqlDb` is owned by this module, so
 // the assignment has to live here -- imported bindings are read-only.
@@ -1305,15 +1306,37 @@ export async function idbLoad(key) {
 export async function exportDb(){
   if(!sqlDb) return;
   const data=sqlDb.export();
+  const name='aardmap-'+new Date().toISOString().slice(0,10)+'.db';
+  if(isNativeHost()){
+    // A blob URL with a download attribute is a silent no-op in a WebView.
+    nativeSaveFile(name, data);
+    appendOutput('Database exported.\n','system');
+    return;
+  }
   const blob=new Blob([data],{type:'application/octet-stream'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
-  a.href=url; a.download='aardmap-'+new Date().toISOString().slice(0,10)+'.db'; a.click();
+  a.href=url; a.download=name; a.click();
   URL.revokeObjectURL(url);
   appendOutput('Database exported.\n','system');
 }
 
 export async function importDb(){
+  if(isNativeHost()){
+    // <input type=file> never opens a picker in a WebView either.
+    try{
+      const bytes=await nativeOpenFile('*/*');
+      if(!bytes || !bytes.length){ appendOutput('[Import] Empty file\n','error'); return; }
+      const SQL=await initSqlPromise;
+      sqlDb=new SQL.Database(bytes);
+      await persistDbNow();
+      appendOutput('Database imported ('+bytes.length+' bytes)\n','system');
+      renderRooms();
+    }catch(e){
+      appendOutput('[Import] '+(e && e.message ? e.message : e)+'\n','error');
+    }
+    return;
+  }
   const input=document.createElement('input');
   input.type='file'; input.accept='.db';
   input.onchange=async e=>{

@@ -1,0 +1,12 @@
+<!-- Notification icons are masked to a silhouette, so this must be a flat white
+     shape on transparent. Any colour here would be discarded anyway. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M12,1 L23,12 L12,23 L1,12 Z M12,6 L6,12 L12,18 L18,12 Z" />
+</vector>

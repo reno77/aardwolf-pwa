@@ -567,6 +567,67 @@ two-byte movement command waiting for more data or the previous ACK, which on a
 - **Never ship a hardcoded password.** Credentials are typed by the user and
   live in browser `localStorage` only.
 
+## 7d. The Android app (`android/`) — the same client with no relay at all
+
+The relay exists for exactly one reason: **a browser cannot open a raw TCP
+socket**, so something else has to hold the telnet session to
+`aardwolf.org:4000`. Nothing else about the client needs a server. sql.js,
+IndexedDB, `localStorage` and `gaardian_maps.db` are all browser-local already.
+
+An Android app can open that socket itself, so the relay, the WSL bridge, the
+Cloudflare tunnel and the always-on PC all disappear together.
+
+**Shape:** a `WebView` running the *same* `pwa/` directory, plus a foreground
+service holding the socket.
+
+```
+pwa/js/transport.js   openTransport() -> WebSocket in a browser,
+                      NativeTransport (window.AardNative) in the app
+android/…/TelnetSession.kt   port of relay_minimal.py's telnet + GMCP read loop
+android/…/MudService.kt      foreground service that owns the socket
+android/…/MainActivity.kt    WebView + WebViewAssetLoader + the JS bridge
+```
+
+Things that are load-bearing and non-obvious:
+
+- **`pwa/` is not copied into the app.** `app/build.gradle.kts` points the
+  `assets` source set at `../pwa`, so the app compiles the live client in. There
+  is deliberately no second copy to drift.
+- **Assets are served over `https://appassets.androidplatform.net`, not
+  `file://`.** A `file://` origin is opaque: IndexedDB and `localStorage` are
+  unreliable-to-unavailable there and ES modules will not load. `WebViewAssetLoader`
+  gives a normal secure origin, and the two path handlers (`/static/` then `/`)
+  reproduce the relay's URL layout so no client code needs an app-specific path.
+- **Content types are pinned, not guessed** (`MainActivity.CONTENT_TYPES`) for
+  the same reason `relay_minimal.py` pins them: a module served as `text/plain`
+  is refused outright.
+- **sql.js is vendored** in `pwa/vendor/` rather than loaded from cdnjs, so first
+  paint needs no network. `.wasm` must be served as `application/wasm` or
+  `instantiateStreaming` silently falls back to a slower path.
+- **`/export` and `/import` are rewritten for the app.** A blob URL with
+  `<a download>` and an `<input type=file>` are both *silent no-ops* in a
+  WebView. They now go through the system document picker, chunked in both
+  directions because a multi-megabyte string through the JS bridge is not
+  something the WebView guarantees to deliver. This is also the migration path:
+  `/export` in the browser client, `/import` in the app.
+- **The session outlives the page, on purpose.** Closing the transport does not
+  drop the MUD connection — Android recreates Activities freely, and a socket
+  owned by the page would take the character link-dead with it. Only the
+  notification's Disconnect action really ends it.
+- **Missed output is dropped, not replayed.** A reattaching page gets a GMCP
+  state re-request and a fresh prompt (exactly what the relay does), not the
+  backlog. Replaying `text` messages would re-run every trigger and re-feed the
+  campaign parsers — a replayed kill line would advance the S&D state machine
+  for a kill it already handled.
+
+**What you lose versus the relay:** one shared session across phone *and*
+desktop, and a session that survives with the phone off. The app's session lives
+and dies with the phone.
+
+**Versions are pinned to Android Studio 2022.2** (the installed one): AGP 8.0.2,
+Gradle 8.0.2, Kotlin 1.8.22, compileSdk 33, JDK 17. AGP 8.1+ will not sync in
+that Studio. See `android/README.md` for the build.
+
 ## 8. Common pitfalls
 
 | Issue | Cause / Fix |
