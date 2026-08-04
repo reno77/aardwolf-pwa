@@ -20,6 +20,26 @@ export let mapRenderScale=1;
 // =============================================================================
 // MAP
 // =============================================================================
+
+// Cells are wide enough to carry the room's full name rather than a two-letter
+// abbreviation, so they are much wider than they are tall.
+const CELL_W = 124, CELL_H = 19;
+// Breathing room outside the outermost room boxes.
+const GUTTER = 12;
+
+/**
+ * How far the drawing of a room extends past its own centre.
+ *
+ * Rooms are drawn CENTRED on their grid point, and the "you are here" cell adds
+ * a ring outside its box on top of that. The padding either side of the content
+ * has to cover it: the pan clamp forbids a positive offset, so anything drawn
+ * left of x=0 can never be scrolled into view -- which is why dragging appeared
+ * to stop early with the left-hand rooms still cut in half.
+ */
+function ringPad(s){ return Math.max(3, 2.5*s) + Math.max(2, 1.8*s); }
+function padXFor(s){ return Math.round(CELL_W*s/2 + ringPad(s) + GUTTER); }
+function padYFor(s){ return Math.round(CELL_H*s/2 + ringPad(s) + GUTTER); }
+
 // Which area the user has explicitly selected in the dropdown, if any. Cleared
 // when the map is opened so it always starts on the room you are standing in.
 let mapAreaPinned=null;
@@ -172,12 +192,13 @@ export function computeMapState(){
   for(const r of rawRooms){ minX=Math.min(minX,r.dispX); minY=Math.min(minY,r.dispY); maxX=Math.max(maxX,r.dispX); maxY=Math.max(maxY,r.dispY); }
   const w=Math.max(maxX-minX,1), h=Math.max(maxY-minY,1);
 
-  // Cells are wide enough to carry the room's full name rather than a
-  // two-letter abbreviation, so they are much wider than they are tall.
-  const cellW=124, cellH=19, linePad=6;
-  const padX=20, padY=24;
-  const autoScale=Math.min(Math.max((viewportW-padX*2)/(w*cellW), 0.55), 1.4);
+  const cellW=CELL_W, cellH=CELL_H, linePad=6;
+  // `w` is the span between room CENTRES, so the content is one cell wider than
+  // that -- half a box sticks out at each end. Fitting `w` alone made the auto
+  // scale slightly too large and clipped both edge columns.
+  const autoScale=Math.min(Math.max((viewportW-GUTTER*2)/((w+1)*cellW), 0.55), 1.4);
   const scale=autoScale*mapZoom;
+  const padX=padXFor(scale), padY=padYFor(scale);
   // Breathing room at the top, in room-heights, so the first row is not tucked
   // under the map header/controls.
   const padTop=Math.round(3.5*cellH*scale)+padY;
@@ -226,8 +247,9 @@ export function fitLabel(ctx, text, maxWidth, basePx){
  * were 48px wide; with full-name cells it throws the view badly off.
  *
  * Working in content-space instead makes it exact: the anchor's offset from the
- * padding scales with the zoom, and the padding itself is constant (bar padTop,
- * which is recomputed because it is defined in room-heights).
+ * padding scales with the zoom. The padding is recomputed for both scales --
+ * every one of padX/padY/padTop depends on the scale, because they are all
+ * defined in terms of half a room box.
  */
 function anchoredOffset(anchorPx, baseOffset, padOld, padNew, curScale, newScale){
   const content = anchorPx - baseOffset;                 // position within the map image
@@ -236,9 +258,8 @@ function anchoredOffset(anchorPx, baseOffset, padOld, padNew, curScale, newScale
 }
 
 function zoomAbout(cx, cy, baseOffX, baseOffY, curScale, newScale){
-  const {cellH, padX, padY} = mapState;
-  const padTopFor = (s) => Math.round(3.5 * cellH * s) + padY;
-  mapOffsetX = anchoredOffset(cx, baseOffX, padX, padX, curScale, newScale);
+  const padTopFor = (s) => Math.round(3.5 * CELL_H * s) + padYFor(s);
+  mapOffsetX = anchoredOffset(cx, baseOffX, padXFor(curScale), padXFor(newScale), curScale, newScale);
   mapOffsetY = anchoredOffset(cy, baseOffY, padTopFor(curScale), padTopFor(newScale), curScale, newScale);
 }
 
