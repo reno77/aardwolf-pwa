@@ -215,7 +215,7 @@ export function gotoRoomUid(toUid, onDone, opts){
       }
     }
     appendOutput('[S&D] could not reach the target room ('+reason+').\n','error');
-  });
+  }, opts);
 }
 
 export function resolveAreaUid(areaName){
@@ -507,6 +507,10 @@ export function xcpByIndex(index, overrideKw){
   sndState.shortMobName=t.kw;
   sndState.pendingXcp=null;
   sndState.xcpAwaitingArea=null;
+  // A stale "kill" or twin probe from the previous target would otherwise send
+  // this one off sweeping rooms the moment the game says "They aren't here".
+  sndState.pendingKill=null;
+  sndState.pendingTwinProbe=null;
   appendOutput('[S&D] xcp '+idx+': '+t.mob+' ('+t.type+' in '+t.areaName+')\n','quest');
   let htkw = overrideKw || t.htkwOverride || huntTrickKw(t.mob);
   let kw = gmkw(t.mob);
@@ -577,6 +581,8 @@ export function xcpAbandonTarget(t, reason){
   sndState.xcpRuntoTarget=null;
   sndState.pendingXcp=null;
   sndState.xcpNav=null;
+  sndState.pendingKill=null;
+  sndState.pendingTwinProbe=null;
   if(isWalking()) cancelWalk(reason);
   if(t) t.skipped=reason || 'skipped';
   const remaining=campaignTargets.filter(x=>!x.is_dead && !x.skipped);
@@ -1633,10 +1639,109 @@ export function xcpKillTarget(t){
   // "They aren't here."
   const kw=actionKw(t)||gmkw(t.mob);
   appendOutput('[S&D] killing '+t.mob+' (kill '+kw+')...\n','quest');
+  // Watched by parseNotHereOutput: "They aren't here" after this means we are in
+  // a room with the right NAME but not the right room. See xcpSweepTwins.
+  sndState.pendingKill={t, at:currentRoom.uid, ts:Date.now()};
   sendCmd('kill '+kw);
   setTimeout(()=>xcpVerifyKill(t, ()=>{
     appendOutput('[S&D] '+t.mob+' still alive; finish the fight and /xcp to continue.\n','quest');
   }), 5000);
+}
+
+// =============================================================================
+// ROOMS THAT SHARE A NAME
+// =============================================================================
+//
+// `where` reports a room NAME, and names repeat: "The forgotten halls" is NINE
+// rooms in The Goblin Fortress, "Hallway in the fortress" five more. Only 48% of
+// the 22,362 Gaardian rooms have a name unique within their area.
+//
+// So xcpGotoInstance's "already in target room" test -- currentRoom.name equals
+// the name `where` gave -- is right about the name and says nothing about the
+// room. Standing in one of the nine halls it declared arrival, sent `kill lodi`,
+// and got "They aren't here." with no idea what to do next.
+//
+// Being in the wrong twin is an ordinary outcome, not a failure. Walk the others.
+
+const NOT_HERE = [
+  /they aren'?t here/i,
+  /you (?:do not|don't) see (?:that|them|him|her|any) here/i,
+  /you can'?t find any.*here/i,
+  /no such creature/i,
+];
+
+// The reply to `kill` or `look` is immediate, so anything later is somebody
+// else's "They aren't here" -- usually the player typing their own command --
+// and must not send the helper off sweeping rooms.
+const REPLY_WINDOW_MS = 3000;
+
+/** Feed MUD output here; reacts to "kill" or a probe finding nothing. */
+export function parseNotHereOutput(text){
+  const now=Date.now();
+  if(sndState.pendingKill && now - sndState.pendingKill.ts > REPLY_WINDOW_MS) sndState.pendingKill=null;
+  if(sndState.pendingTwinProbe && now - sndState.pendingTwinProbe.ts > REPLY_WINDOW_MS) sndState.pendingTwinProbe=null;
+  const probe=sndState.pendingTwinProbe;
+  const kill=sndState.pendingKill;
+  if(!probe && !kill) return;
+  const clean=stripAnsi(text);
+  const absent=NOT_HERE.some(re=>re.test(clean));
+
+  if(probe){
+    // A probe is a `look <kw>`: anything that is not a "not here" is the mob's
+    // description, which means it is standing right there.
+    sndState.pendingTwinProbe=null;
+    if(absent){ xcpSweepTwins(probe.t); }
+    else { xcpKillTarget(probe.t); }
+    return;
+  }
+  if(absent){
+    sndState.pendingKill=null;
+    xcpSweepTwins(kill.t);
+  }
+}
+
+/**
+ * Try the other rooms in this area that share the target room's name.
+ *
+ * Each twin is visited at most once, so this terminates. Arrival is probed with
+ * `look`, not `kill`: a keyword that matches the campaign mob can equally match
+ * something else standing in the wrong room, and swinging at it is how you end
+ * up fighting a level 80 guard by accident.
+ */
+export function xcpSweepTwins(t){
+  if(!t || t.is_dead) return;
+  const roomName=(t.campaignInstance && t.campaignInstance.roomName) || currentRoom.name;
+  if(!roomName){
+    appendOutput('[S&D] '+t.mob+' is not in this room and I do not know its room name.\n','error');
+    return;
+  }
+  t.twinsTried=t.twinsTried||[];
+  if(currentRoom.uid && !t.twinsTried.includes(currentRoom.uid)) t.twinsTried.push(currentRoom.uid);
+
+  // Match on the area GMCP says we are standing in, not on the campaign's
+  // display name: rooms.area holds the keyword ('fortress') while the campaign
+  // says "The Goblin Fortress", and bridging those depends on the keyword list
+  // having been harvested. We are standing in one of the twins, so currentRoom
+  // is the authority here and needs no bridging at all.
+  const twins=resolveRoomsByName(roomName, currentRoom.area || t.areaName)
+    .filter(r=>r.uid && r.uid!==currentRoom.uid && !t.twinsTried.includes(r.uid));
+  if(!twins.length){
+    appendOutput('[S&D] tried every room called "'+roomName+'" in '+t.areaName
+      + ' and '+t.mob+' was in none of them -- it has moved, or the room is not mapped. '
+      + 'Run /xcp '+t.index+' again to re-locate.\n','error');
+    sndState.pendingXcp=null;
+    return;
+  }
+  const next=pickNearestRoom(twins, currentRoom.uid);
+  appendOutput('[S&D] not this "'+roomName+'" -- '+twins.length+' more to try.\n','quest');
+  // ignoreName: every twin has the same name as the room we are standing in, so
+  // the walker's name-match would call it arrived before taking a single step.
+  gotoRoomUid(next.uid, ()=>{
+    t.twinsTried.push(next.uid);
+    const kw=actionKw(t)||gmkw(t.mob);
+    sndState.pendingTwinProbe={t, ts:Date.now()};
+    sendCmd('look '+kw);
+  }, {ignoreName:true});
 }
 
 export function mobMatches(targetMob, lineMob){

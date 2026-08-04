@@ -182,7 +182,7 @@ export function cancelWalk(reason){
  * Walk to `targetUid`, one confirmed step at a time.
  * onDone/onFail are optional callbacks.
  */
-export function walkTo(targetUid, onDone, onFail){
+export function walkTo(targetUid, onDone, onFail, opts){
   if(!sqlDb){ appendOutput('[nav] no map database\n','error'); return false; }
   if(!currentRoom.uid){
     appendOutput('[nav] current room unknown -- walk one room to set it\n','error');
@@ -201,11 +201,18 @@ export function walkTo(targetUid, onDone, onFail){
   cancelWalk('superseded');
   // A Gaardian target uid is a placeholder that no live room will ever equal, so
   // remember the room NAME too and treat arriving there as success.
+  //
+  // `opts.ignoreName` turns that off, for the one case where it is exactly
+  // wrong: walking between two rooms that SHARE a name (snd.js's twin sweep).
+  // There the name matches before the first step, so the walk would finish
+  // without moving.
   let targetName = null;
-  try {
-    const r = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [targetUid]);
-    if(r.length && r[0].values.length) targetName = String(r[0].values[0][0]||'').toLowerCase();
-  } catch(e){ /* name is a convenience, not a requirement */ }
+  if(!(opts && opts.ignoreName)){
+    try {
+      const r = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [targetUid]);
+      if(r.length && r[0].values.length) targetName = String(r[0].values[0][0]||'').toLowerCase();
+    } catch(e){ /* name is a convenience, not a requirement */ }
+  }
   walk = {targetUid, targetName, path, plan: path.slice(1), expectUid:null,
           lastFrom:null, lastDir:null, repaths:0, timer:null, onDone, onFail,
           opened:false, blind:false};
