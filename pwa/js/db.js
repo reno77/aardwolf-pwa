@@ -58,6 +58,7 @@ const SCHEMA_SQL = `
     key_name TEXT,
     key_desc TEXT,                -- how to get past it, from Gaardian
     key_room TEXT,                -- where the key comes from
+    random   INTEGER DEFAULT 0,   -- destination is randomised; to_uid is one sample
     PRIMARY KEY(from_uid, dir));
   CREATE INDEX IF NOT EXISTS idx_exits_from ON exits(from_uid);
   CREATE INDEX IF NOT EXISTS idx_exits_to   ON exits(to_uid);
@@ -167,6 +168,9 @@ export async function initDb() {
     try { sqlDb.run('ALTER TABLE exits ADD COLUMN ' + col); addedKeyCols = true; }
     catch(e){ /* already there */ }
   }
+  let addedRandomCol = false;
+  try { sqlDb.run('ALTER TABLE exits ADD COLUMN random INTEGER DEFAULT 0'); addedRandomCol = true; }
+  catch(e){ /* already there */ }
 
   seedAreas();   // minimal area keyword seed; /areas harvests the real list
   initInventory();
@@ -180,6 +184,13 @@ export async function initDb() {
   if(addedKeyCols){
     const n = backfillKeyNotes();
     if(n) appendOutput('[Gaardian] Added key notes to ' + n + ' exit(s)\n', 'system');
+  }
+
+  // Likewise for the random exits every earlier import threw away. Re-importing
+  // the area would undo the room promotions, so add just the missing rows.
+  if(addedRandomCol){
+    const n = backfillRandomExits();
+    if(n) appendOutput('[Gaardian] Restored ' + n + ' random exit(s) dropped by an earlier import\n', 'system');
   }
 
   // Aliases live in the table, not in state.js: seed the built-ins once, then
@@ -427,6 +438,7 @@ export function importGaardianArea(gaardianAreaid, aardwolfAreaName, force){
     markAreaImported(gaardianAreaid);
     appendOutput(`[Gaardian] Imported ${inserted} rooms and ${stats.total} exits for ${areaName}`
       + (stats.custom ? ` (${stats.custom} custom, ${stats.doors} doors)` : '')
+      + (stats.random ? `, ${stats.random} random` : '')
       + (stats.skipped ? `, skipped ${stats.skipped}` : '') + '\n', 'system');
     return inserted;
   } catch(e){
@@ -526,8 +538,52 @@ export function backfillKeyNotes(){
   return n;
 }
 
+/**
+ * Add the random exits that earlier imports dropped.
+ *
+ * A re-import is not an option: importGaardianArea re-creates `gaardian:` rows
+ * for rooms that have since been promoted to live uids, which splits the graph.
+ * So insert only the missing edges, onto whichever uid each end now lives under.
+ * INSERT OR IGNORE, because a row already there was observed from GMCP and an
+ * observation beats Gaardian's sample.
+ */
+export function backfillRandomExits(){
+  if(!sqlDb || !gaardianDb) return 0;
+  let n = 0;
+  // A room may have been promoted since import, so ask where each end lives now.
+  const liveUid = (areaid, localId) => {
+    try {
+      const m = sqlDb.exec(
+        'SELECT aardwolf_uid FROM room_gaardian_map WHERE gaardian_areaid=? AND gaardian_local_id=?',
+        [areaid, localId]);
+      if(m.length && m[0].values.length) return String(m[0].values[0][0]);
+    } catch(e){ /* no map row */ }
+    return gaardianUid(areaid, localId);
+  };
+  try {
+    const areas = sqlDb.exec('SELECT areaid FROM gaardian_imported');
+    for(const [areaid] of (areas[0]?.values || [])){
+      const g = gaardianDb.exec(
+        `SELECT from_room, to_room, exit_type, exit_action
+           FROM exits WHERE areaid=? AND random=1 AND to_room IS NOT NULL`, [areaid]);
+      for(const [fromRoom, toRoom, exitType, exitAction] of (g[0]?.values || [])){
+        let dir = null;
+        if(exitType >= 0 && exitType <= 5) dir = GAARDIAN_DIRS[exitType];
+        else if(exitType === 6 && exitAction) dir = 'enter ' + String(exitAction).trim().toLowerCase();
+        else if(exitType === 7 && exitAction) dir = String(exitAction).trim().toLowerCase();
+        if(!dir) continue;
+        sqlDb.run(
+          `INSERT OR IGNORE INTO exits(from_uid, dir, to_uid, random) VALUES (?,?,?,1)`,
+          [liveUid(areaid, fromRoom), dir, liveUid(areaid, toRoom)]);
+        n++;
+      }
+    }
+  } catch(e){ console.error('backfillRandomExits error', e); }
+  return n;
+}
+
 export function importGaardianExits(gaardianAreaid){
-  const stats = {total:0, custom:0, doors:0, skipped:0};
+  const stats = {total:0, custom:0, doors:0, skipped:0, random:0};
   const res = gaardianDb.exec(
     `SELECT from_room, to_room, exit_type, exit_action, target_areaid,
             door_type, key_name, random, key_desc, key_room
@@ -535,8 +591,18 @@ export function importGaardianExits(gaardianAreaid){
   const rows = res[0]?.values || [];
   for(const [fromRoom, toRoom, exitType, exitAction, targetAreaid, doorType, keyName, random,
              keyDesc, keyRoom] of rows){
-    // Random exits cannot be routed through -- you don't know where you land.
-    if(random){ stats.skipped++; continue; }
+    // Random exits used to be dropped here, on the reasoning that you cannot
+    // route through an exit whose destination you do not know. That is true of a
+    // single step and false of the graph: in The Goblin Fortress the eight random
+    // exits between "Fortress intersection" and the hallways are the ONLY link
+    // between the entrance and the interior, so dropping them left 34 of 50 rooms
+    // -- including every "The forgotten halls" room -- unreachable, and `/xcp`
+    // reported "no route" for a mob sitting a few rooms away.
+    //
+    // They are kept and flagged instead. `to_uid` is one sample rather than a
+    // fact, so the pathfinder breaks ties against them and the walker expects to
+    // land somewhere else (see nav.js): re-pathing from wherever you come out is
+    // exactly how you cross a maze.
 
     let toUid = null;
     if(toRoom){
@@ -566,11 +632,12 @@ export function importGaardianExits(gaardianAreaid){
 
     const door = doorType || 0;
     sqlDb.run(
-      `INSERT OR REPLACE INTO exits(from_uid, dir, to_uid, level, door, key_name, key_desc, key_room)
-       VALUES (?,?,?,?,?,?,?,?)`,
+      `INSERT OR REPLACE INTO exits(from_uid, dir, to_uid, level, door, key_name, key_desc, key_room, random)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
       [gaardianUid(gaardianAreaid, fromRoom), dir, toUid, level, door, keyName || null,
-       cleanKeyDesc(keyDesc), resolveKeyRoom(gaardianAreaid, keyRoom)]);
+       cleanKeyDesc(keyDesc), resolveKeyRoom(gaardianAreaid, keyRoom), random ? 1 : 0]);
     stats.total++;
+    if(random) stats.random++;
     if(dir.length > 1) stats.custom++;
     if(door) stats.doors++;
   }

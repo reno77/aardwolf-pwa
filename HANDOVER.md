@@ -129,8 +129,57 @@ Confirmed against the shipped file by comparing each exit to its rooms' x/y delt
 | 7 | arbitrary command in `exit_action` (`climb ladder`, `say yes`) | 786 |
 
 Plus `door_type` (0 none, 1 door, 2 locked; 4,647 doors, 1,037 locked across 145
-areas), `key_name`, and `random` (313 exits — skipped; you cannot route through
-an exit that goes somewhere unpredictable).
+areas), `key_name`, and `random` (313 exits across 17 areas).
+
+**Random exits are imported, flagged `exits.random=1`, and routed through.** They
+used to be dropped, on the reasoning that you cannot route through an exit whose
+destination is unpredictable. That is true of one step and false of the graph: in
+16 of those 17 areas the random exits are the only link between one part of the
+map and another, so dropping them left this much unreachable from the area
+entrance —
+
+| area | rooms | reachable without | with |
+|---|---|---|---|
+| Castle Vlad-Shamir | 100 | 4 | 100 |
+| The Coral Kingdom | 50 | 7 | 50 |
+| The Goblin Fortress | 50 | 16 | 50 |
+| The DarkLight | 49 | 18 | 47 |
+| Lowlands Paradise '96 | 97 | 35 | 97 |
+| Gold Rush | 49 | 35 | 49 |
+| …11 more | | | |
+
+That is what produced `/xcp`'s "no route" for a campaign mob a few rooms away:
+Lodi, the goblin mutant sits in The forgotten halls, and every route in crosses
+one random exit at "Fortress intersection".
+
+`to_uid` on a random exit is one sample rather than a fact, so:
+
+- `findPath` orders `random ASC` before `length(dir) ASC`, which breaks ties
+  against them. It does **not** prefer a longer certain path over a shorter random
+  one — that would need a weighted search, and BFS is the right shape here.
+- the walker sets **no** `expectUid` for a random step, so landing elsewhere
+  neither rewrites the edge (fossilising one roll as truth) nor spends the
+  re-path budget. Re-pathing from wherever you come out *is* how a maze is
+  crossed; `MAX_RANDOM_STEPS` (40) is the only bound.
+- arriving is usually detected by **room name**, not uid — `walkTo` remembers the
+  target's name, so any one of the nine "The forgotten halls" rooms counts.
+
+### What `room.info.exits` actually means
+
+Two assumptions in the old code were wrong, both confirmed live in The Goblin
+Fortress:
+
+- **A closed door is still listed.** "Before the fortress" reports `"n": 31848`
+  and answers `n` with "The doubledoor is closed." So a missing direction is a
+  *hidden* exit, not a closed one; ordinary closed doors are caught by the
+  `BLOCKED` text triggers in `nav.js`, which send `open <dir>` and retry.
+- **A destination of `-1` means "not telling".** Maze rooms report every exit as
+  `-1` — "Fortress intersection" gives `{n:-1, e:-1, s:-1, w:-1, d:-1}` with
+  `details: "pk,maze"`. Storing that created an edge to a room named `-1` and,
+  worse, the upsert overwrote the real Gaardian destination, so the first visit
+  to a maze destroyed the only route across it. `isKnownUid` now rejects `-1`,
+  `0`, `'?'` and empty, and marks the existing edge `random=1` instead — the
+  game telling you it will not disclose a destination is the definition of one.
 
 ## 4. Navigation
 
@@ -636,7 +685,7 @@ that Studio. See `android/README.md` for the build.
 | Modules 404 or refuse to load | Check `Content-Type: application/javascript` on `/static/js/*.js`. |
 | Phone cannot connect | PC and phone on same network, or use the Cloudflare tunnel. |
 | No room shown after login | GMCP re-request (§7); check `char.status`/`room.info` are arriving. |
-| Map or walk says "no route" | The area probably is not imported yet, or the target is behind a `random`/`level 999` exit. |
+| Map or walk says "no route" | The area probably is not imported yet, or the target is behind a `level 999` exit. If the area is one of the 17 with random exits (§3) and the DB predates the `exits.random` column, `initDb` backfills them once — check for "[Gaardian] Restored N random exit(s)". |
 | `rt` goes to the wrong area | Run `/areas` to harvest real keywords. |
 | Blank line between every row | `appendOutput` must buffer partial lines; see §9. |
 | Connected, but a blank screen and "no MUD updates" | The relay shares ONE MUD session across all clients. A client attaching to a session that is already past the banner sees nothing until the MUD next says something, which looks identical to a broken connection. `action:'connect'` now re-requests GMCP state and nudges a prompt out on reattach. If you are debugging this, poke the session with a bare newline before concluding anything is broken. |

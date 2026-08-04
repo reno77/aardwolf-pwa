@@ -42,8 +42,12 @@ function quoteList(items){ return items.map(()=>'?').join(','); }
  * depth level rather than the old "SELECT everything FROM exits" on every
  * single step of every walk.
  *
- * `ORDER BY length(dir)` makes a plain compass exit win a tie against a custom
- * one -- typing 'n' is cheaper and safer than 'climb the rickety ladder'.
+ * Ties within a depth level are broken first against random exits (their to_uid
+ * is one sample, not a fact) and then by `length(dir)`, so a plain compass exit
+ * wins over a custom one -- typing 'n' is cheaper and safer than 'climb the
+ * rickety ladder'. Note this only orders *equal-length* routes: a shorter route
+ * through a random exit still beats a longer certain one, which would need a
+ * weighted search rather than BFS.
  *
  * Returns null when no path exists, [] when already there.
  */
@@ -61,20 +65,20 @@ export function findPath(fromUid, toUid, opts){
     if(!frontier.length || frontier.length > MAX_FRONTIER) break;
     const seen = [...visited];
     const res = sqlDb.exec(
-      `SELECT from_uid, dir, to_uid FROM exits
+      `SELECT from_uid, dir, to_uid, COALESCE(random,0) FROM exits
         WHERE to_uid IN (${quoteList(frontier)})
           AND from_uid NOT IN (${quoteList(seen)})
           AND level <= ?
-        ORDER BY length(dir) ASC`,
+        ORDER BY COALESCE(random,0) ASC, length(dir) ASC`,
       [...frontier, ...seen, maxLevel]);
     const rows = res[0]?.values || [];
     if(!rows.length) return null;
 
     const next = [];
-    for(const [f, dir, t] of rows){
-      if(visited.has(f)) continue;      // first row wins: shortest, then shortest dir
+    for(const [f, dir, t, rnd] of rows){
+      if(visited.has(f)) continue;      // first row wins: shortest, then certain, then shortest dir
       visited.add(f);
-      cameFrom.set(f, {dir, next: t});
+      cameFrom.set(f, {dir, next: t, random: !!rnd});
       next.push(f);
       if(f === String(fromUid)){
         // Walk the chain forwards to build the route.
@@ -83,7 +87,7 @@ export function findPath(fromUid, toUid, opts){
         while(cur !== String(toUid)){
           const step = cameFrom.get(cur);
           if(!step) return null;
-          path.push({dir: step.dir, uid: step.next});
+          path.push({dir: step.dir, uid: step.next, random: step.random});
           cur = step.next;
         }
         return path;
@@ -139,6 +143,9 @@ function reportKeyFor(fromUid, dir){
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
+// A maze is crossed by trying and re-trying, so random exits get their own,
+// much larger budget rather than spending the re-path one on the first corner.
+const MAX_RANDOM_STEPS = 40;
 
 let walk = null;   // {targetUid, path, expectUid, lastFrom, lastDir, repaths, timer, onDone, onFail, opened}
 
@@ -260,8 +267,11 @@ function step(){
   const dir = next.dir;
 
   if(!isCustomExit(dir)){
-    // GMCP lists only exits that are currently open, so a compass direction
-    // that is missing from the room is a closed door -- try opening it once.
+    // A compass direction the map has and GMCP does not is usually a hidden or
+    // stuck door, so try opening it once. Note this is NOT how an ordinary
+    // closed door is caught: room.info lists closed doors like any other exit
+    // ("Before the fortress" reports "n" while answering "The doubledoor is
+    // closed."), so those are handled by the text triggers in BLOCKED below.
     const available = (currentRoom.exits || []).map(d => String(d).toLowerCase());
     if(available.length && !available.includes(dir.toLowerCase()) && !walk.opened){
       walk.opened = true;
@@ -284,7 +294,24 @@ function step(){
   walk.opened = false;
   walk.lastFrom = currentRoom.uid;
   walk.lastDir = dir;
-  walk.expectUid = next.uid;
+  // A random exit lands you somewhere the map cannot predict, so claim no
+  // expectation: onRoomChanged must not "correct" the edge to whichever room
+  // this particular roll produced, and landing elsewhere must not count against
+  // the re-path budget. Crossing a maze IS re-pathing from wherever you come
+  // out, so the only thing worth bounding is how long that may go on for.
+  if(next.random){
+    walk.expectUid = null;
+    walk.randomSteps = (walk.randomSteps || 0) + 1;
+    if(walk.randomSteps > MAX_RANDOM_STEPS){
+      finish(false, 'still lost after ' + MAX_RANDOM_STEPS + ' moves in ' + (currentRoom.name || 'the maze'));
+      return;
+    }
+    if(walk.randomSteps === 1){
+      appendOutput('[nav] the way through is a random exit; feeling my way\n','system');
+    }
+  } else {
+    walk.expectUid = next.uid;
+  }
   clearStepTimer();
   walk.timer = setTimeout(() => {
     if(!walk) return;

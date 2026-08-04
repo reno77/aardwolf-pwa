@@ -33,6 +33,19 @@ const BACK_FROM_NEIGHBOUR = {
 /** Effective level for exit level-gates; portals get the tier bonus. */
 export function effectiveLevel(){ return charLevel + charTier * 10; }
 
+/**
+ * True when a room.info exit destination is a real room number.
+ *
+ * Aardwolf uses several values for "there is a way out here but I am not telling
+ * you where it goes": 0, '?', and -1 (every exit of a maze room). They are not
+ * uids and must never be stored as one.
+ */
+function isKnownUid(v){
+  if(v === undefined || v === null || v === '' || v === '?') return false;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0;
+}
+
 // nav.js registers here so a state change can wake a paused walk without
 // gmcp.js importing nav.js (which would close an import cycle at module level).
 let charStateListener = null;
@@ -68,7 +81,7 @@ export function processGMCP(key, data){
       } else {
         const exits=data.exits||{};
         for(const [dir,toUid] of Object.entries(exits)){
-          if(!toUid || toUid==='0') continue;
+          if(!isKnownUid(toUid)) continue;
           const neighbor=sqlDb.exec("SELECT x,y,z FROM rooms WHERE uid=?",[toUid]);
           if(neighbor.length && neighbor[0].values.length){
             const nx=neighbor[0].values[0][0]||0;
@@ -102,20 +115,37 @@ export function processGMCP(key, data){
     if(!existing.length || !existing[0].values[0][0]){
       sqlDb.run("UPDATE rooms SET first_seen=? WHERE uid=?", [now, uid]);
     }
-    // Store exits. GMCP only ever publishes n/e/s/w/u/d and only the ones that
-    // are currently open, so this never overwrites an imported custom exit.
+    // Store exits. GMCP only ever publishes n/e/s/w/u/d, so this never
+    // overwrites an imported custom exit. It does NOT publish only the exits
+    // that are open: a closed door is listed like any other (confirmed at
+    // "Before the fortress", whose doubledoor answers "The doubledoor is
+    // closed." while room.info still reports "n": 31848).
     for(const [dir, toUid] of Object.entries(exits)){
-      if(toUid && toUid!=='0' && toUid!=='?'){
-        // UPSERT, not INSERT OR REPLACE. REPLACE deletes the row and inserts a
-        // new one, so every column not named here -- level, door, key_name,
-        // key_desc, key_room -- was reset to NULL. Since room.info arrives on
-        // every single room change, that wiped the door and key data the moment
-        // after the Gaardian import supplied it, and re-armed exits the walker
-        // had just parked at level 999 for being guarded.
-        sqlDb.run(`INSERT INTO exits(from_uid, dir, to_uid) VALUES (?,?,?)
-          ON CONFLICT(from_uid, dir) DO UPDATE SET to_uid=excluded.to_uid`,
-          [uid, dir, String(toUid)]);
+      if(!isKnownUid(toUid)){
+        // The game declares the exit but withholds where it goes -- maze rooms
+        // report every destination as -1. Writing that through produced an edge
+        // to a room called "-1" AND, because of the upsert below, overwrote
+        // whatever real destination the Gaardian import had supplied, breaking
+        // the only route across the maze on the first visit to it.
+        //
+        // Record the game's own admission instead: this exit's destination is
+        // not predictable. That is exactly what `random` means.
+        if(toUid !== undefined && toUid !== null && toUid !== '' && toUid !== '0'){
+          try {
+            sqlDb.run('UPDATE exits SET random=1 WHERE from_uid=? AND dir=?', [uid, dir]);
+          } catch(e){ /* column added by initDb; ignore on a very old db */ }
+        }
+        continue;
       }
+      // UPSERT, not INSERT OR REPLACE. REPLACE deletes the row and inserts a
+      // new one, so every column not named here -- level, door, key_name,
+      // key_desc, key_room, random -- was reset to NULL. Since room.info arrives
+      // on every single room change, that wiped the door and key data the moment
+      // after the Gaardian import supplied it, and re-armed exits the walker
+      // had just parked at level 999 for being guarded.
+      sqlDb.run(`INSERT INTO exits(from_uid, dir, to_uid) VALUES (?,?,?)
+        ON CONFLICT(from_uid, dir) DO UPDATE SET to_uid=excluded.to_uid`,
+        [uid, dir, String(toUid)]);
     }
     // Cross-reference with Gaardian map database and import the whole area
     // Pass the exits GMCP just reported so a repeated room name can be told
