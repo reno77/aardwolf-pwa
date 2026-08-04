@@ -11,8 +11,10 @@ android {
         applicationId = "win.bedok77.aardclient"
         minSdk = 26          // adaptive icons, no legacy mipmap fallback needed
         targetSdk = 33
-        versionCode = 1
-        versionName = "1.0"
+        // Bump on every build you hand to a device, or Android silently keeps the
+        // installed one and you debug a fix that is not there.
+        versionCode = 2
+        versionName = "1.1"
     }
 
     // The web client is NOT copied into the app -- the app compiles the live
