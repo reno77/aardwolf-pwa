@@ -193,10 +193,26 @@ Fortress:
   the offending edge (`UPDATE exits SET to_uid=...`) and re-paths.
   It gates on `char.status.state`: pauses on 8 (fighting), stands on 9/11,
   never steps during 12 (running).
-- A cardinal direction missing from `room.info.exits` is a **closed door** —
-  GMCP lists only open exits — so the walker tries `open <dir>` once.
-  A custom exit is never validated against GMCP, because Aardwolf never
-  publishes custom exits there.
+- A cardinal direction missing from `room.info.exits` is a **hidden** exit, not a
+  closed one — GMCP lists closed doors like any other (see §3) — so the walker
+  tries `open <dir>` once. Ordinary closed doors are caught by the `BLOCKED`
+  text triggers. A custom exit is never validated against GMCP, because Aardwolf
+  never publishes custom exits there.
+- `planRoute(from, to, ruledOut)` wraps `findPath` and falls back to the rooms
+  the current one might still be (see "Room identity"), because an unidentified
+  room has no edges and therefore no routes.
+
+### Commands worth knowing
+
+| command | what it is for |
+|---|---|
+| `/navdiag [room name]` | Why "no route"? Prints the room's uid, row, edges, anchor, candidate set, imported-area count, and the direct and via-candidate routes. Leads with the client build id, so stale cached modules are obvious. |
+| `/navto [uid]` | Walk to a room by GMCP number. With no argument, prints the current uid. A **name** is the wrong handle in the areas that need one most: The Gauntlet has 51 rooms called "The Gauntlet", and Gaardian records no way into the half of that area containing them. A uid is unique and needs no identification machinery — the room only has to have been visited once. |
+
+Caveat on `/navto` in a true maze: if the room reports its exits as `-1` (see
+§3), nothing is stored for them, so walking builds no usable graph there either.
+The uid is still a valid target from outside; it is the last leg that has to be
+walked by hand.
 
 There is **no movement throttle**. There used to be a 500 ms one that silently
 dropped anything faster; it broke tap-to-walk (paced at 400 ms) and `/runto`

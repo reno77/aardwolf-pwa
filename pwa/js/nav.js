@@ -177,7 +177,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-1.6';
+export const NAV_BUILD = 'nav-1.7';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -641,6 +641,55 @@ export function renderRooms(){
     el.onclick=()=>walkTo(r.uid);
     list.appendChild(el);
   }
+}
+
+/**
+ * `/navto [uid]` -- walk to a room by its GMCP number, or report where we are.
+ *
+ * A room name is the wrong handle in exactly the places you most need one: The
+ * Gauntlet has 51 rooms called "The Gauntlet", and Gaardian records no way into
+ * the half of that area containing them, so neither `/runto <name>` nor the
+ * campaign helper can express "the room I was in last time". A uid is unique,
+ * survives areas the reference map does not cover, and needs no identification
+ * machinery -- the room only has to have been visited once.
+ *
+ * With no argument it prints the current uid, which is how you collect one on
+ * the way past.
+ */
+export function doNavTo(target){
+  const uid = String(target || '').trim();
+  if(!uid){
+    appendOutput('[nav] you are in ' + (currentRoom.uid || '?')
+      + ' "' + (currentRoom.name || '?') + '" -- /navto ' + (currentRoom.uid || '<uid>')
+      + ' walks back here\n', 'system');
+    return;
+  }
+  if(!sqlDb){ appendOutput('[nav] no map database\n','error'); return; }
+  if(currentRoom.uid === uid){ appendOutput('[nav] already there\n','system'); return; }
+
+  let row = [];
+  try {
+    const r = sqlDb.exec('SELECT name, area FROM rooms WHERE uid=?', [uid]);
+    row = (r.length && r[0].values.length) ? r[0].values[0] : [];
+  } catch(e){ /* reported below */ }
+  if(!row.length){
+    // Distinguish "never been there" from "there but unreachable": only one of
+    // them is fixable by walking.
+    let seen = false;
+    try {
+      const r = sqlDb.exec('SELECT 1 FROM exits WHERE to_uid=? LIMIT 1', [uid]);
+      seen = !!(r.length && r[0].values.length);
+    } catch(e){ /* leave seen false */ }
+    appendOutput('[nav] room ' + uid + ' is not in your map'
+      + (seen ? ' yet -- something points at it, but you have never stood in it'
+              : '. Walk there once and /navto will find it afterwards.')
+      + '\n', 'error');
+    return;
+  }
+  const [name, area] = row;
+  appendOutput('[nav] walking to ' + uid + ' "' + name + '"'
+    + (area ? ' [' + area + ']' : '') + '\n', 'system');
+  walkTo(uid, () => appendOutput('[nav] arrived at ' + name + '.\n','system'));
 }
 
 export function doRunto(target){
