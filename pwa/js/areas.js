@@ -164,6 +164,12 @@ export function areaRuntoKeyword(areaName){
 // Nothing used to read the reply to `rt`, so a failure was indistinguishable
 // from success and the helper carried on regardless.
 const RUNTO_FAIL = [
+  // Not a runto failure at all -- it is what the game says when `runto` was
+  // abbreviated to `rt` and matched some other command. Kept as a tripwire: if
+  // this ever fires again, the travel command is wrong, and saying so beats
+  // running `where` from the wrong side of the world.
+  /^You are not carrying that item/im,
+  /only works from Aylor recall/im,
   /^No such area/im,
   /^You cannot runto/im,
   /^Sorry, you cannot/im,

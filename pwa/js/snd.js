@@ -265,6 +265,18 @@ export function resolveRoomsByName(roomName, areaName){
   return (res.length && res[0].values)?res[0].values.map(r=>({uid:r[0], name:r[1], area:r[2]})):[];
 }
 
+/**
+ * Spelled out, never abbreviated.
+ *
+ * `rt <area>` is not runto. Aardwolf matched it to some other command entirely
+ * and answered "You are not carrying that item.", which is not in any runto
+ * failure list, so the helper believed the travel had worked and carried on to
+ * `where` from the wrong side of the world. `help rt` DOES resolve to the Runto
+ * page, which is exactly why this looked right for so long: the help system and
+ * the command parser do not abbreviate the same way.
+ */
+const RUNTO = 'runto ';
+
 export function runtoArea(areaName){
   // Aardwolf's own runto handles area-level travel; room-level navigation inside
   // an area goes through gotoRoomUid or the hunt fallback.
@@ -278,7 +290,7 @@ export function runtoArea(areaName){
     return false;
   }
   appendOutput('[S&D] runto '+area.key+(area.guessed?' (guessed)':'')+'\n','quest');
-  sendCmd('rt '+area.key);
+  sendCmd(RUNTO+area.key);
   return true;
 }
 
@@ -680,9 +692,9 @@ export function xcpStep(t){
     t.recallSent=true;
     sndState.xcpAwaitingArea=t.areaName.toLowerCase();
     sndState.xcpRuntoTarget=t;
-    appendOutput('[S&D] recalling to '+t.areaName+' (rt '+kw+')...\n','quest');
+    appendOutput('[S&D] recalling to '+t.areaName+' ('+RUNTO+kw+')...\n','quest');
     xcpRecall(t, ()=>{
-      sendCmd('rt '+kw);
+      sendCmd(RUNTO+kw);
       // If the area never turns up, abandon this target. The old code carried on
       // to `where` anyway -- but `where` only works inside the target area, so
       // that just burned commands in the wrong place and never converged.
