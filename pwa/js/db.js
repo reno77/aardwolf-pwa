@@ -197,6 +197,8 @@ export async function initDb() {
   // boundary between the rooms you have walked and the ones you have not.
   const merged = promoteAnchoredRooms();
   if(merged) appendOutput('[Gaardian] Merged ' + merged + ' identified room(s) into the live map\n', 'system');
+  const joined = reconnectDanglingExits();
+  if(joined) appendOutput('[Gaardian] Joined ' + joined + ' room(s) our exits pointed at but the map held separately\n', 'system');
 
   // Aliases live in the table, not in state.js: seed the built-ins once, then
   // the table is the only source of truth so a deletion actually sticks.
@@ -887,6 +889,64 @@ export function promoteAnchoredRooms(){
     }
   } catch(e){ console.error('promoteAnchoredRooms error', e); }
   return n;
+}
+
+/**
+ * Identify the rooms our own exits point at but that we have never stood in.
+ *
+ * An edge whose `to_uid` has no row in `rooms` is the map's ragged edge: GMCP
+ * told us "north of here is 47061" without us ever going there. Meanwhile the
+ * Gaardian import holds that room under a synthetic uid, with the name we path
+ * by. Two halves of one room, and the join between them is pure deduction:
+ *
+ *   this room is Gaardian 26, Gaardian says 26's `n` is room 27,
+ *   GMCP says this room's `n` is 47061,  therefore 47061 IS room 27.
+ *
+ * cascadeAnchors does this reasoning already, but only outward from a room at
+ * the moment it is identified. Anything it did not reach then -- because the
+ * room was anchored by another path, or the exit was learned afterwards -- stays
+ * split forever, and walking cannot repair it: the edge that would re-identify
+ * the room is the one the live observation replaced. The Star Dressing Room sat
+ * one step north of a room the player was standing in, with `where` naming it
+ * and the map holding it, and no route between them.
+ *
+ * So do the same deduction as a sweep over the ragged edge, which does not care
+ * what order anything happened in. Returns how many rooms were joined up.
+ */
+export function reconnectDanglingExits(){
+  if(!sqlDb || !gaardianDb) return 0;
+  let fixed = 0;
+  try {
+    for(let round = 0; round < 3; round++){
+      const r = sqlDb.exec(
+        `SELECT e.from_uid, e.dir, e.to_uid
+           FROM exits e LEFT JOIN rooms r ON r.uid = e.to_uid
+          WHERE r.uid IS NULL AND e.to_uid NOT LIKE 'gaardian:%'`);
+      const dangling = r[0]?.values || [];
+      if(!dangling.length) break;
+      let changed = 0;
+      for(const [fromUid, dir, toUid] of dangling){
+        const a = sqlDb.exec(
+          'SELECT gaardian_areaid, gaardian_local_id FROM room_gaardian_map WHERE aardwolf_uid=?',
+          [String(fromUid)]);
+        if(!a.length || !a[0].values.length) continue;      // this end is not identified either
+        const [areaid, localId] = a[0].values[0];
+        const target = new Map(gaardianExitsOf(areaid, localId)).get(dir);
+        if(target == null) continue;                        // Gaardian has no such exit
+        const known = anchoredLocalId(String(toUid), areaid);
+        if(known != null && known !== target) continue;     // conflicting evidence: leave it alone
+        const synthetic = gaardianUid(areaid, target);
+        const row = sqlDb.exec('SELECT area FROM rooms WHERE uid=?', [synthetic]);
+        if(!row.length || !row[0].values.length) continue;  // already merged, or never imported
+        recordAnchor(String(toUid), areaid, target, String(row[0].values[0][0] || ''),
+                     new Date().toISOString());
+        changed++;
+      }
+      fixed += changed;
+      if(!changed) break;
+    }
+  } catch(e){ console.error('reconnectDanglingExits error', e); }
+  return fixed;
 }
 
 /**
