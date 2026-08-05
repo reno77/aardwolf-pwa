@@ -193,6 +193,11 @@ export async function initDb() {
     if(n) appendOutput('[Gaardian] Restored ' + n + ' random exit(s) dropped by an earlier import\n', 'system');
   }
 
+  // Rooms identified but never merged leave the map split in two at exactly the
+  // boundary between the rooms you have walked and the ones you have not.
+  const merged = promoteAnchoredRooms();
+  if(merged) appendOutput('[Gaardian] Merged ' + merged + ' identified room(s) into the live map\n', 'system');
+
   // Aliases live in the table, not in state.js: seed the built-ins once, then
   // the table is the only source of truth so a deletion actually sticks.
   seedAliases();
@@ -692,7 +697,14 @@ function cascadeAnchors(seedUid, areaid, seedLocalId, areaName, now){
       const m = gexits.get(dir);
       if(m == null) continue;
       seen.add(target);
-      if(anchoredLocalId(target, areaid) != null) continue;   // already known
+      if(anchoredLocalId(target, areaid) != null){
+        // Already identified -- but "identified" and "merged" are different
+        // things, and an anchor recorded without its promotion leaves the
+        // Gaardian row sitting there under its synthetic uid with nothing
+        // pointing at it. Re-promoting is a no-op once the rows are one.
+        promoteGaardianRoom(target, areaid, anchoredLocalId(target, areaid), areaName);
+        continue;
+      }
       recordAnchor(target, areaid, m, areaName, now);
       anchored++;
       queue.push([target, m]);
@@ -841,6 +853,40 @@ function putCandidates(uid, areaid, ids){
 
 function clearCandidates(uid){
   try { sqlDb.run('DELETE FROM room_candidates WHERE uid=?', [String(uid)]); } catch(e){}
+}
+
+/**
+ * Merge any room that is identified but not yet merged.
+ *
+ * `room_gaardian_map` says "live room X is Gaardian room Y". promoteGaardianRoom
+ * is what makes that true in the graph -- one row, one set of edges. If the
+ * anchor was written without the promotion, both rows survive, and the effect is
+ * worse than never having identified the room at all:
+ *
+ *   Backstage (gaardian:319:26) is promoted to live uid 47057, so its exits move
+ *   with it. Its `n` exit collides with the one GMCP observed -- n leads to
+ *   47061 -- and the observed row wins, which is right. But room 27, the Star
+ *   Dressing Room, had exactly one inbound edge: that one. It is now a row no
+ *   edge reaches, under a uid nothing refers to, while 47061 is a uid with no
+ *   row. Two halves of one room, and "no route" to a mob standing next door.
+ *
+ * Returns how many rooms were merged. Idempotent, so it can run on every load.
+ */
+export function promoteAnchoredRooms(){
+  if(!sqlDb) return 0;
+  let n = 0;
+  try {
+    // Only rows whose synthetic twin is still present need anything doing.
+    const r = sqlDb.exec(
+      `SELECT m.aardwolf_uid, m.gaardian_areaid, m.gaardian_local_id, r.area
+         FROM room_gaardian_map m
+         JOIN rooms r ON r.uid = 'gaardian:' || m.gaardian_areaid || ':' || m.gaardian_local_id`);
+    for(const [uid, areaid, localId, area] of (r[0]?.values || [])){
+      promoteGaardianRoom(String(uid), areaid, localId, area);
+      n++;
+    }
+  } catch(e){ console.error('promoteAnchoredRooms error', e); }
+  return n;
 }
 
 /**
