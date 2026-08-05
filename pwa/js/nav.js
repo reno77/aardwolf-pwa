@@ -175,6 +175,10 @@ function reportKeyFor(fromUid, dir){
 // Aardwolf mapper's walkto mode does -- and it replaces the old 500ms blanket
 // throttle that silently dropped steps.
 
+// Bump when shipping a client change you will be asked about. /navdiag prints
+// it, so "still the same error" can be told apart from "still the old code".
+export const NAV_BUILD = 'nav-1.4';
+
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
 // A maze is crossed by trying and re-trying, so random exits get their own,
@@ -550,6 +554,69 @@ export function onMudText(text){
 onCharStateChange((st) => {
   if(walk && st === STATE_READY && !walk.expectUid) step();
 });
+
+// =============================================================================
+// DIAGNOSTICS
+// =============================================================================
+
+/**
+ * `/navdiag [room name]` -- why can't I path there?
+ *
+ * "no route" has at least five distinct causes -- area not imported, room not
+ * identified, no candidates recorded, a level-gated or deleted edge, genuinely
+ * disconnected map -- and they are indistinguishable from the message. Rather
+ * than guess at a database that only exists in the player's browser, print it.
+ */
+export function navDiag(targetName){
+  if(!sqlDb){ appendOutput('[diag] no database\n','error'); return; }
+  const say = (s) => appendOutput('[diag] ' + s + '\n', 'system');
+  const one = (sql, params) => {
+    try { const r = sqlDb.exec(sql, params); return (r[0]?.values) || []; }
+    catch(e){ return [['ERROR: ' + e.message]]; }
+  };
+
+  // Printed first so a stale cached bundle is obvious from the paste alone,
+  // rather than being mistaken for the fix not working.
+  say('client build ' + NAV_BUILD);
+  const uid = currentRoom.uid;
+  say('here: uid=' + uid + ' name="' + (currentRoom.name||'?') + '" area="'
+      + (currentRoom.area||'?') + '" exits=' + JSON.stringify(currentRoom.exits||[]));
+
+  const row = one('SELECT area, name FROM rooms WHERE uid=?', [String(uid)]);
+  say('rooms row: ' + (row.length ? JSON.stringify(row[0]) : 'MISSING -- this room is not in the map at all'));
+
+  const out = one('SELECT dir, to_uid, level, COALESCE(random,0) FROM exits WHERE from_uid=?', [String(uid)]);
+  say('edges out of here: ' + (out.length ? out.map(r=>r[0]+'->'+r[1]+(r[2]?' lvl'+r[2]:'')+(r[3]?' rnd':'')).join(', ') : 'NONE -- this room is an island'));
+
+  const anchor = one('SELECT gaardian_areaid, gaardian_local_id FROM room_gaardian_map WHERE aardwolf_uid=?', [String(uid)]);
+  say('identified as: ' + (anchor.length ? 'gaardian:'+anchor[0][0]+':'+anchor[0][1] : 'NOT identified'));
+
+  const cands = gaardianCandidateUids(uid);
+  say('candidates: ' + (cands.length ? cands.join(', ') : 'NONE recorded'
+      + (anchor.length ? '' : ' -- with no anchor and no candidates, nothing can path from here')));
+
+  const imported = one('SELECT COUNT(*) FROM gaardian_imported');
+  say('areas imported: ' + (imported.length ? imported[0][0] : '?')
+      + '; rooms in this area: ' + JSON.stringify(one('SELECT COUNT(*) FROM rooms WHERE area=?', [String(currentRoom.area||'')])[0] || []));
+
+  if(!targetName) { say('add a room name to test a route, e.g. /navdiag Star Dressing Room'); return; }
+
+  const targets = one('SELECT uid, name, area FROM rooms WHERE name LIKE ?', ['%'+targetName+'%']);
+  if(!targets.length){ say('no room matching "'+targetName+'" in the map'); return; }
+  say('matching rooms: ' + targets.length);
+  for(const [tuid, tname, tarea] of targets.slice(0, 12)){
+    const direct = findPath(uid, tuid);
+    let line = '  ' + tuid + ' "' + tname + '" ['+tarea+'] direct='
+      + (direct === null ? 'NO ROUTE' : direct.length + ' steps: ' + direct.map(p=>p.dir).join(' '));
+    if(direct === null){
+      const plan = planRoute(uid, tuid);
+      line += plan.path
+        ? ' | via candidate ' + plan.viaCandidate + ': ' + plan.path.map(p=>p.dir).join(' ')
+        : ' | no candidate route either';
+    }
+    say(line);
+  }
+}
 
 // =============================================================================
 // ROOM LIST / /runto

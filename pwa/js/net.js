@@ -3,7 +3,7 @@
 import { exportDb, importDb } from './db.js';
 import { processGMCP } from './gmcp.js';
 import { showFullMap } from './map.js';
-import { doRunto, onMudText } from './nav.js';
+import { doRunto, navDiag, onMudText } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
          parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, huntTo, stopAutoHunt,
          setXcpMode, sndState, xcpByIndex, xcpNext } from './snd.js';
@@ -213,6 +213,7 @@ export function submitCmd(){
       return;
     }
     if(cmd==='areas'){ harvestAreaKeywords(); return; }
+    if(cmd==='navdiag'){ navDiag(parts.slice(1).join(' ').trim()); return; }
     if(cmd==='lag'){ measureLag(parseInt(parts[1])||5); return; }
     if(cmd==='ah'){ huntTo(parts.slice(1).join(' ')); return; }
     if(cmd==='goto'){ doRunto(parts.slice(1).join(' ')); return; }

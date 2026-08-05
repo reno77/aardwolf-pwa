@@ -1078,6 +1078,33 @@ const squash = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
  * `areas(name, key)` is populated from GMCP room.area, which hands us the exact
  * display name for the keyword, so that is tried first and is authoritative.
  */
+// Words an area name carries that its keyword drops.
+const AREA_STOPWORDS = new Set(['the', 'of', 'a', 'an', 'and', 'to', 'in']);
+
+/**
+ * True when `want` is this area's significant words concatenated in some order.
+ *
+ * 'songpalace' is "Palace" + "Song" reversed; 'goblinfortress' is "Goblin" +
+ * "Fortress" in order with "The" dropped. Both are invisible to a substring
+ * test. The length check first makes this cheap and keeps it strict -- every
+ * word must be used exactly once, with nothing left over.
+ */
+function wordsConcatMatch(want, areaName){
+  const all = String(areaName || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+  const sig = all.filter(w => !AREA_STOPWORDS.has(w));
+  if(!sig.length) return false;
+  if(sig.reduce((n, w) => n + w.length, 0) !== want.length) return false;
+  let rest = want;
+  const pool = sig.slice();
+  while(pool.length){
+    const i = pool.findIndex(w => rest.startsWith(w));
+    if(i < 0) return false;
+    rest = rest.slice(pool[i].length);
+    pool.splice(i, 1);
+  }
+  return rest === '';
+}
+
 export function gaardianAreaIdFor(areaName){
   if(!gaardianDb || !areaName) return null;
   const n = String(areaName).trim().toLowerCase();
@@ -1110,6 +1137,16 @@ export function gaardianAreaIdFor(areaName){
         const s = squash(nm);
         if(s.includes(want) || want.includes(s)) return id;
       }
+    }
+    // 4. The keyword is the area's significant words in a different ORDER.
+    //    GMCP calls The Palace of Song 'songpalace', which is neither an exact
+    //    squash of it nor a substring in either direction, so without a
+    //    harvested areas row the area was never matched at all: not imported,
+    //    not anchored, no candidates, and every route into it "no route".
+    //    Checked against all 269 Gaardian names: no collisions.
+    for(const want of names.map(squash)){
+      if(want.length < 5) continue;
+      for(const [id, nm] of rows) if(wordsConcatMatch(want, nm)) return id;
     }
   } catch(e){ /* fall through */ }
   return null;
