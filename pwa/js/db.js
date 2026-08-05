@@ -843,6 +843,28 @@ function clearCandidates(uid){
   try { sqlDb.run('DELETE FROM room_candidates WHERE uid=?', [String(uid)]); } catch(e){}
 }
 
+/**
+ * The Gaardian rooms a live room might still be, as uids the pathfinder can use.
+ *
+ * A room whose name repeats within its area -- "Backstage" is three rooms in The
+ * Palace of Song -- cannot be identified on sight, so matchAardwolfToGaardian
+ * deliberately records a candidate set instead of guessing. Correct, but it left
+ * the room an island: no anchor means no edges into the imported area, so
+ * findPath from it returned null and `/xcp` reported "no route" to a mob three
+ * rooms away.
+ *
+ * The candidates are exactly the hypotheses worth pathing from. See planRoute
+ * in nav.js, which walks the shortest of them; moving is itself what settles
+ * which room this was.
+ */
+export function gaardianCandidateUids(uid){
+  if(!sqlDb || !uid) return [];
+  try {
+    const r = sqlDb.exec('SELECT areaid, local_id FROM room_candidates WHERE uid=?', [String(uid)]);
+    return (r[0]?.values || []).map(([areaid, localId]) => gaardianUid(areaid, localId));
+  } catch(e){ return []; }
+}
+
 /** Every Gaardian room in this area with this name. */
 function roomsNamed(areaid, roomName){
   try {

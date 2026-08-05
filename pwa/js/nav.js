@@ -18,7 +18,7 @@
 //     so that test was false every time and *every* custom-exit step aborted
 //     with "is not available here". A custom exit is now simply typed.
 
-import { sqlDb } from './db.js';
+import { gaardianCandidateUids, sqlDb } from './db.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,
          STATE_RUNNING } from './gmcp.js';
@@ -100,6 +100,40 @@ export function findPath(fromUid, toUid, opts){
 
 /** True when `dir` is a command to type rather than a compass direction. */
 export function isCustomExit(dir){ return String(dir).length > 1; }
+
+/**
+ * A route from `fromUid`, falling back to the room's unresolved identities.
+ *
+ * A live room whose name repeats in its area is deliberately left unidentified
+ * (see gaardianCandidateUids): the map cannot tell which "Backstage" you are in
+ * without more evidence. Unidentified means no edges into the imported area,
+ * which made findPath return null and the campaign helper report "no route" for
+ * a mob three rooms away in a fully mapped area.
+ *
+ * The candidate set is precisely the list of hypotheses, so path from each and
+ * take the shortest. It may be the wrong twin's route -- but walking is what
+ * produces the evidence that settles it, and the walker re-paths every step, so
+ * a wrong guess corrects itself as soon as an unambiguous room is entered.
+ *
+ * `ruledOut` holds candidates a failed move has already disproved -- see the
+ * dead-end handler, which turns walking into elimination over the candidate set.
+ *
+ * Returns {path, viaCandidate, choices} with path null if nothing works.
+ */
+export function planRoute(fromUid, targetUid, ruledOut){
+  const direct = findPath(fromUid, targetUid);
+  if(direct) return {path: direct, viaCandidate: null, choices: 0};
+
+  const skip = ruledOut || [];
+  const candidates = gaardianCandidateUids(fromUid).filter(c => !skip.includes(c));
+  let best = null, bestFrom = null;
+  for(const c of candidates){
+    if(c === fromUid) continue;
+    const p = findPath(c, targetUid);
+    if(p && (best === null || p.length < best.length)){ best = p; bestFrom = c; }
+  }
+  return {path: best, viaCandidate: bestFrom, choices: candidates.length};
+}
 
 /**
  * Print what Gaardian knows about getting past a blocked exit.
@@ -190,13 +224,20 @@ export function walkTo(targetUid, onDone, onFail, opts){
   }
   if(currentRoom.uid === targetUid){ if(onDone) onDone(); return true; }
 
-  const path = findPath(currentRoom.uid, targetUid);
+  const plan = planRoute(currentRoom.uid, targetUid);
+  const path = plan.path;
   if(path === null){
-    appendOutput('[nav] no route to that room from here\n','error');
+    appendOutput('[nav] no route to that room from here'
+      + (plan.choices ? ' (nor from any of the ' + plan.choices + ' rooms this could be)' : '')
+      + '\n','error');
     if(onFail) onFail('no route');
     return false;
   }
   if(!path.length){ if(onDone) onDone(); return true; }
+  if(plan.viaCandidate){
+    appendOutput('[nav] this room is not identified yet (' + plan.choices
+      + ' it could be); taking the shortest route from them\n','system');
+  }
 
   cancelWalk('superseded');
   // A Gaardian target uid is a placeholder that no live room will ever equal, so
@@ -215,7 +256,10 @@ export function walkTo(targetUid, onDone, onFail, opts){
   }
   walk = {targetUid, targetName, path, plan: path.slice(1), expectUid:null,
           lastFrom:null, lastDir:null, repaths:0, timer:null, onDone, onFail,
-          opened:false, blind:false};
+          // A route planned from a candidate is a hypothesis about which room we
+          // are in, so the uids along it are not predictions to hold the walk to.
+          opened:false, blind: !!plan.viaCandidate,
+          viaCandidate: plan.viaCandidate, ruledOut: []};
   setWalkCanceller(cancelWalk);
   appendOutput(`[nav] walking ${path.length} step${path.length>1?'s':''}: `
     + path.map(p=>p.dir).join(' ') + '\n', 'system');
@@ -243,8 +287,12 @@ function step(){
     return;
   }
 
-  // Re-path from where we actually are rather than trusting the plan.
-  let path = findPath(currentRoom.uid, walk.targetUid);
+  // Re-path from where we actually are rather than trusting the plan. Once an
+  // unambiguous room is entered, cascadeAnchors identifies the ones behind it
+  // too, so a walk that started as a guess turns into a real route mid-way.
+  const replan = planRoute(currentRoom.uid, walk.targetUid, walk.ruledOut);
+  walk.viaCandidate = replan.viaCandidate;
+  let path = replan.path;
   if(path === null){
     // Re-pathing fails routinely while crossing an area imported from Gaardian:
     // every step into a skeleton room arrives with a real uid that is not yet in
@@ -263,7 +311,9 @@ function step(){
       return;
     }
   } else {
-    walk.blind = false;
+    // A route planned from a candidate is still only a hypothesis about which
+    // room this is, so uid mismatches stay expected until the room is anchored.
+    walk.blind = !!replan.viaCandidate;
   }
   if(!path.length){ finish(true); return; }
   walk.path = path;
@@ -459,6 +509,21 @@ export function onMudText(text){
         walk.timer = setTimeout(step, 600);
         return;
       }
+    }
+    // The step came from a guess about which of several identically-named rooms
+    // we are in, and the guess has just been disproved: this room does not have
+    // that exit. Rule the candidate out and re-plan from the ones still standing,
+    // rather than sending the same impossible move until the retry budget runs
+    // out. Walking is how the room gets identified; a refusal is evidence too.
+    if(b.deadEnd && walk.viaCandidate){
+      walk.ruledOut.push(walk.viaCandidate);
+      appendOutput('[nav] not that room after all; '
+        + 'ruling it out and re-planning\n','system');
+      walk.viaCandidate = null;
+      walk.plan = null;
+      clearStepTimer();
+      walk.timer = setTimeout(step, 400);
+      return;
     }
     // "There is no exit that way" is the map being wrong, not the walk being
     // impossible: delete the edge we were told to take and try another route.
