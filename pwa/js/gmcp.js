@@ -11,6 +11,11 @@ export let currentRoom={name:'Unknown',area:'',exits:[]};
 export let charState = 3;    // 3 == "active and ready"
 export let charLevel = 1;
 export let charTier  = 0;
+// From char.vitals. Read by snd.js so the helper stops fighting when it is losing.
+export let charHp    = 0;
+export let charMaxHp = 0;
+/** 1 when unknown, so a missing vitals feed never blocks anything. */
+export function hpFraction(){ return charMaxHp > 0 ? charHp / charMaxHp : 1; }
 
 export const STATE_READY = 3;
 export const STATE_FIGHTING = 8;
@@ -227,6 +232,11 @@ export function processGMCP(key, data){
   }
   if(key==='char.vitals'){
     const hp=data.hp||'', maxhp=data.maxhp||'', mn=data.mana||'', maxmn=data.maxmana||'', mv=data.move||'', maxmv=data.maxmove||'';
+    // Kept, not just displayed. The campaign helper attacked target after target
+    // regardless of health -- 2389, 1440, 1308, 922, dead -- because nothing in the
+    // client ever read these numbers.
+    if(hp!=='' ) charHp = Number(hp) || 0;
+    if(maxhp!=='') charMaxHp = Number(maxhp) || 0;
     let vitalText='';
     if(hp&&maxhp) vitalText+=hp+'/'+maxhp+'hp ';
     if(mn&&maxmn) vitalText+=mn+'/'+maxmn+'mn ';

@@ -272,6 +272,14 @@ export async function initDb() {
     appendOutput('[Triggers] Loaded ' + fadoTriggers.length + ' triggers from DB\n', 'system');
   }
 
+  // One-time: repair the hunger trigger for databases that already hold the old
+  // one-sequence version, whose `eat mush` outran the spell that makes the mushroom.
+  try {
+    sqlDb.run("UPDATE triggers SET cmd=? WHERE name='fado_t32'", ["cast 'create food'"]);
+    sqlDb.run("INSERT OR IGNORE INTO triggers(name, enabled, pattern, cmd, category) VALUES (?,?,?,?,?)",
+      ['fado_eat', 1, 'Magic Mushroom suddenly appears', 'eat mush', 'utility']);
+  } catch(e){ /* triggers table absent on a very old db */ }
+
   // One-time: switch off the blind six-direction door opener. It predates the
   // walker, which now handles a closed door by opening the one direction it
   // wants, and the two fight -- the trigger's stray `op s` drew a locked-door
@@ -1595,7 +1603,12 @@ export function seedFadoTriggers() {
     {name:'fado_t29',enabled:true,p:/A dark storm/i,cmd:'back storm; ki storm;attmarbu2'},
     {name:'fado_t30',enabled:true,p:/A medic is here/i,cmd:'strangle med;back med;ki med;attspi'},
     {name:'fado_t31',enabled:true,p:/A tse tse fly is here/i,cmd:'strangle fly;back tse;ki tse;attmarbu'},
-    {name:'fado_t32',enabled:true,p:/very hungry/i,cmd:"cast 'create food'; cast 'create food'; eat mush ; eat mush"},
+    // Hunger, in two halves. Sending the casts and the eats as one sequence paced
+    // 300ms apart put `eat mush` in front of the mushroom -- the game answered
+    // "You don't have that." and the character stayed hungry. Cast on hunger, and
+    // eat when the mushroom actually turns up, which the game announces.
+    {name:'fado_t32',enabled:true,p:/(?:very )?hungry/i,cmd:"cast 'create food'"},
+    {name:'fado_eat',enabled:true,p:/Magic Mushroom suddenly appears/i,cmd:'eat mush'},
     {name:'fado_t33',enabled:true,p:/The tribe has outcast/i,cmd:'strangle out;back out;ki out;attspi'},
     {name:'fado_t34',enabled:true,p:/A member of the Blood Ring High Council is handing/i,cmd:'strang high; back high; ki high; attsweep'},
     {name:'fado_t35',enabled:true,p:/A pair of kobolds/i,cmd:'back pair;ki pair;attksp2'},

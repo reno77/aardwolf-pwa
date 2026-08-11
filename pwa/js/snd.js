@@ -2,7 +2,8 @@
 
 import { canonicalArea, findAreaAnywhere, gaardianDb, gaardianPath,
          resolveRoomByNameAnywhere, sqlDb } from './db.js';
-import { currentRoom, charState, charLevel, STATE_READY, STATE_FIGHTING } from './gmcp.js';
+import { currentRoom, charState, charLevel, hpFraction,
+         STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
 import { findPath, planRoute, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo,
          walkToCoords } from './nav.js';
@@ -613,6 +614,12 @@ export function buildCpTargetsFromCheck(checkList){
     kw:gmkw(v.mob, v.areaName)
   }));
   appendOutput('[S&D] cp check parsed: '+campaignTargets.length+' targets, type='+sndState.cpType+'\n','quest');
+  // Print the numbers /xcp takes. mergeCpCheck does this, but a FRESH campaign
+  // comes through here instead, which is exactly when the list is longest and
+  // knowing the numbering matters most.
+  liveTargets().forEach((t, i) => {
+    appendOutput('        /xcp '+(i+1)+'  '+t.mob+'  ('+t.areaName+')\n','quest');
+  });
   renderCampaign();
 }
 
@@ -2369,8 +2376,46 @@ function killNextCopy(t){
   });
 }
 
+// Do not start a fight below this, and abandon the run below the second figure.
+// The helper killed its way from full health to dead without once looking at the
+// numbers the game sends on every tick.
+const FIGHT_ABOVE = 0.55;
+const BAIL_BELOW   = 0.35;
+const HEAL_TRIES   = 8;
+
+/**
+ * Heal to FIGHT_ABOVE before attacking, or give up the run.
+ *
+ * Returns true when it has taken over -- the caller must not attack. `heal` is the
+ * player's own alias, so whatever their class does to recover is what runs; if they
+ * have no such alias the command simply fails and resting still regenerates.
+ */
+function healBeforeFighting(t, resume){
+  const frac = hpFraction();
+  if(frac >= FIGHT_ABOVE) return false;
+  if(charState === STATE_FIGHTING) return false;      // already committed; see below
+  t.healTries = (t.healTries || 0) + 1;
+  if(t.healTries > HEAL_TRIES){
+    appendOutput('[S&D] still on '+Math.round(frac*100)+'% health after '+HEAL_TRIES
+      + ' attempts -- stopping rather than walking into another fight.\n','error');
+    sndState.pendingXcp = null;
+    return true;
+  }
+  appendOutput('[S&D] '+Math.round(frac*100)+'% health: healing before the next fight'
+    + ' ('+t.healTries+'/'+HEAL_TRIES+').\n','quest');
+  sendCmd('heal');
+  setTimeout(()=>{
+    if(sndState.pendingXcp !== t) return;
+    if(hpFraction() >= FIGHT_ABOVE){ t.healTries = 0; resume(); return; }
+    if(!healBeforeFighting(t, resume)) resume();
+  }, 6000);
+  return true;
+}
+
 export function xcpKillTarget(t, forcedKw, onStillAlive){
   if(t.is_dead) return;
+  // Health first. Everything below this line commits the character to a fight.
+  if(healBeforeFighting(t, ()=>xcpKillTarget(t, forcedKw, onStillAlive))) return;
   // A keyword, like `where` and `hunt`. The quoted full name is not something
   // the game can target: standing in the throne room with Queen Trudes in front
   // of us, `kill "trudes tronesetter, queen of the kobaloi"` answered
@@ -2411,6 +2456,16 @@ export function xcpKillTarget(t, forcedKw, onStillAlive){
   // instead, with a cap so a fight we are losing does not hang the helper.
   let waited = 0;
   const whenDone = () => {
+    // Losing. Recall out rather than watching the numbers fall to zero -- which is
+    // what happened in the Forest Strategy Room: 922 of 3058 against a mob at full
+    // health, and the helper simply kept waiting for combat to end.
+    if(charState === STATE_FIGHTING && hpFraction() < BAIL_BELOW){
+      appendOutput('[S&D] down to '+Math.round(hpFraction()*100)+'% mid-fight -- recalling out.\n','error');
+      sendCmdRaw('recall');
+      sndState.pendingXcp = null;
+      sndState.pendingKill = null;
+      return;
+    }
     if(charState === STATE_FIGHTING && waited < 90000){
       waited += 1500;
       setTimeout(whenDone, 1500);
