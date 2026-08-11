@@ -824,7 +824,109 @@ export function xcpAbandonTarget(t, reason){
  *
  * Returns false if the note is not actionable, so the caller can abandon.
  */
+// A held portal is used with a bare `enter` (help portals). Confirmed with the
+// Amulet of the Planes: `enter amulet`, `enter planes`, `use amulet` and `rub
+// amulet` are all refused; holding it and typing `enter` works.
+const CARRYING = /^you are carrying:/im;
+const NOT_CARRYING = /nothing with name or keyword|you do not have that|^you (?:do not|don'?t) have/im;
+const HELD_OK = /you (?:hold|are now holding|wield)/im;
+
+/** Feed MUD output here while an entry item is being readied. */
+export function parseEntryItemOutput(text){
+  const st = sndState.pendingEntryItem;
+  if(!st) return;
+  if(Date.now() - st.ts > 10000){ sndState.pendingEntryItem = null; return; }
+  const clean = stripAnsi(text);
+
+  if(st.stage === 'check'){
+    if(NOT_CARRYING.test(clean)){
+      // The keyword may simply be the wrong end of the name; try the next before
+      // concluding the item is missing.
+      if(st.kwIndex + 1 < st.kws.length){
+        st.kwIndex++;
+        st.kw = st.kws[st.kwIndex];
+        st.ts = Date.now();
+        sendCmdRaw('i '+st.kw);
+        return;
+      }
+      sndState.pendingEntryItem = null;
+      appendOutput('[S&D] you are not carrying '+st.item+', which is how you reach '
+        + st.areaName + '. '+(st.note||'')+'\n','error');
+      return;
+    }
+    if(CARRYING.test(clean)){
+      st.stage = 'hold';
+      st.ts = Date.now();
+      appendOutput('[S&D] you have '+st.item+'; holding it.\n','quest');
+      sendCmdRaw('hold '+st.kw);
+      return;
+    }
+    return;
+  }
+  if(st.stage === 'hold'){
+    // "You do not have that item" here means it is already held, not missing --
+    // holding moves it out of inventory into the hand slot.
+    if(HELD_OK.test(clean) || NOT_CARRYING.test(clean)){
+      st.stage = 'enter';
+      st.ts = Date.now();
+      appendOutput('[S&D] using it (a held portal takes a bare "enter").\n','quest');
+      sendCmdRaw('enter');
+      setTimeout(()=>{
+        if(sndState.pendingEntryItem !== st) return;
+        sndState.pendingEntryItem = null;
+        appendOutput('[S&D] you are in '+(currentRoom.name||'?')+' ['+(currentRoom.area||'?')+'].'
+          + ' /navto ' + (currentRoom.uid||'?') + ' comes back here -- note it, some planes\n'
+          + '       can only be left from the room you arrived in. Then /xcp again.\n','quest');
+      }, 4000);
+      return;
+    }
+  }
+}
+
+/**
+ * The note names an item rather than a place: carry it, hold it, use it.
+ *
+ * "Use the Amulet of the Planes." has no area and no coordinate, so
+ * followEntryHint had nothing to act on and simply reported the note. The amulet
+ * is a held portal, and Aardwolf uses those with a bare `enter` -- documented only
+ * in `help portals`, plural; `enter amulet`, `use amulet` and `rub amulet` are all
+ * refused.
+ */
+/**
+ * Keywords to try for an item name, best first.
+ *
+ * "Amulet of the Planes" is targeted as `amulet`, not `planes` -- `i planes` and
+ * `enter planes` were both refused live. The head noun sits BEFORE "of", so a
+ * plain last-word rule picks exactly the wrong end. Everything else ("magic
+ * carpet") does want the last word, so try the head noun first and fall back.
+ */
+function itemKeywords(name){
+  const words = String(name||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ')
+    .split(/\s+/).filter(w => w && !/^(a|an|the)$/.test(w));
+  if(!words.length) return [];
+  const ofAt = words.indexOf('of');
+  const out = [];
+  if(ofAt > 0) out.push(words[ofAt-1]);      // 'amulet' from 'amulet of the planes'
+  out.push(words[words.length-1]);           // 'carpet' from 'magic carpet'
+  out.push(words[0]);
+  return [...new Set(out)];
+}
+
+function useEntryItem(t, hint){
+  const item = String(hint.item || '').trim();
+  if(!item) return false;
+  const kws = itemKeywords(item);
+  if(!kws.length) return false;
+  appendOutput('[S&D] '+t.areaName+' is reached with "'+item+'"; checking you have it.\n','quest');
+  sndState.pendingEntryItem = {t, item, kws, kwIndex: 0, kw: kws[0],
+                               areaName: t.areaName, note: hint.note,
+                               stage: 'check', ts: Date.now()};
+  sendCmdRaw('i '+kws[0]);
+  return true;
+}
+
 export function followEntryHint(t, hint){
+  if(hint && hint.item && !hint.area) return useEntryItem(t, hint);
   if(!hint || !hint.area || hint.x == null) return false;
   const bridge = lookupArea(hint.area);
   if(!bridge || bridge.nogo){
@@ -937,6 +1039,10 @@ export function xcpStep(t){
     const known = entryHint(t.areaName);
     if(known && known.norunto){
       appendOutput('[S&D] runto cannot reach '+t.areaName+'.\n','error');
+      // An item hint needs no travel at all, so act on it before giving up. This is
+      // the remembered path -- the note was learned on an earlier attempt, possibly
+      // in an earlier campaign.
+      if(known.item && followEntryHint(t, known)) return;
       if(known.note) appendOutput('[S&D] the game says: '+known.note+'\n','quest');
       appendOutput('[S&D] get there yourself'
         + (known.area ? ' (via '+known.area

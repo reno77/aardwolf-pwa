@@ -208,6 +208,10 @@ const NOTE_AREA = /\bin\s+([A-Z][\w' -]*?)\s*[.,]/;
 const NOTE_COORDS = /\bcoords?\s*(-?\d+)\s*,\s*(-?\d+)/i;
 // The thing to enter once you are standing on the coordinate.
 const NOTE_LANDMARK = /\b(?:look for|find|enter)\s+(?:the\s+)?([\w' -]+?)\s+(?:in|at)\b/i;
+// "Use the Amulet of the Planes." -- an item you carry, not a place you walk to,
+// so there is no area and no coordinate in the note and followEntryHint had
+// nothing to act on. Aardwolf uses held portals with a bare `enter` (help portals).
+const NOTE_ITEM = /\buse\s+(?:the\s+|a\s+|an\s+)?([\w' -]+?)\s*[.!]?\s*$/i;
 
 /** Pull the routing hint out of a refused `runto`. Returns null if there is none. */
 export function parseRuntoNote(text){
@@ -217,7 +221,10 @@ export function parseRuntoNote(text){
   const area = (note.match(NOTE_AREA) || [])[1] || null;
   const c = note.match(NOTE_COORDS);
   const landmark = (note.match(NOTE_LANDMARK) || [])[1] || null;
-  return {note, area, landmark,
+  // Only read an item when there is no place to go: "Use the Amulet of the Planes"
+  // is an item, "Look for the Andromeda Galaxy in Vidblain" is a landmark.
+  const item = (!area && !c) ? ((note.match(NOTE_ITEM) || [])[1] || null) : null;
+  return {note, area, landmark, item,
           x: c ? parseInt(c[1]) : null, y: c ? parseInt(c[2]) : null};
 }
 
@@ -245,13 +252,14 @@ export function rememberEntryHint(areaName, hint){
   const n = stripAnsi(String(areaName)).trim().toLowerCase();
   try {
     sqlDb.run(
-      `INSERT INTO areas(name, key, norunto, entry_note, entry_area, entry_x, entry_y, entry_landmark)
-         VALUES (?,?,1,?,?,?,?,?)
+      `INSERT INTO areas(name, key, norunto, entry_note, entry_area, entry_x, entry_y,
+                         entry_landmark, entry_item)
+         VALUES (?,?,1,?,?,?,?,?,?)
        ON CONFLICT(name) DO UPDATE SET norunto=1, entry_note=excluded.entry_note,
          entry_area=excluded.entry_area, entry_x=excluded.entry_x, entry_y=excluded.entry_y,
-         entry_landmark=excluded.entry_landmark`,
+         entry_landmark=excluded.entry_landmark, entry_item=excluded.entry_item`,
       [n, areaRuntoKeyword(areaName) || n, hint.note, hint.area, hint.x, hint.y,
-       hint.landmark || null]);
+       hint.landmark || null, hint.item || null]);
     return true;
   } catch(e){ console.error('rememberEntryHint error', e); return false; }
 }
@@ -262,12 +270,20 @@ export function entryHint(areaName){
   const n = stripAnsi(String(areaName)).trim().toLowerCase();
   try {
     const r = sqlDb.exec(
-      'SELECT entry_note, entry_area, entry_x, entry_y, norunto, entry_landmark'
+      'SELECT entry_note, entry_area, entry_x, entry_y, norunto, entry_landmark, entry_item'
       + ' FROM areas WHERE name=? OR key=? LIMIT 1', [n, n]);
     if(!r.length || !r[0].values.length) return null;
-    const [note, area, x, y, norunto, landmark] = r[0].values[0];
+    const [note, area, x, y, norunto, landmark, item] = r[0].values[0];
     if(!note && !norunto) return null;
+    // Rows stored before entry_item existed still carry the note, so derive the
+    // item from it rather than making the player provoke a fresh refusal. Only
+    // when there is no place to go -- an item hint and a landmark hint are
+    // different things.
+    let useItem = item || null;
+    if(!useItem && note && !area && x == null){
+      useItem = (String(note).match(NOTE_ITEM) || [])[1] || null;
+    }
     return {note: note || null, area: area || null, x, y,
-            norunto: !!norunto, landmark: landmark || null};
+            norunto: !!norunto, landmark: landmark || null, item: useItem};
   } catch(e){ return null; }
 }

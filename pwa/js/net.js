@@ -5,7 +5,8 @@ import { processGMCP } from './gmcp.js';
 import { showFullMap } from './map.js';
 import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
-         parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, parseFollowMoveOutput, parseIdentifyOutput, parseWhereOrdOutput,
+         parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, parseFollowMoveOutput,
+         parseIdentifyOutput, parseWhereOrdOutput, parseKeyFetchOutput, parseEntryItemOutput,
          huntTo, stopAutoHunt,
          setXcpMode, sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
@@ -384,6 +385,8 @@ export function handleMessage(msg){
       parseFollowMoveOutput(msg.text); // a shut door on a hunt trail
       parseIdentifyOutput(msg.text);   // which copy cannot be hunted
       parseWhereOrdOutput(msg.text);   // and where that copy is
+      parseKeyFetchOutput(msg.text);   // did the key actually come out of the box
+      parseEntryItemOutput(msg.text);  // readying a held portal such as the amulet
       processTriggers(msg.text); parseWhereOutput(msg.text); parseHuntOutput(msg.text); checkQuest(msg.text);
       break;
     case 'echo': appendOutput(msg.text,'echo'); break;
