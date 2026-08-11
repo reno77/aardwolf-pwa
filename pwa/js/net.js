@@ -5,7 +5,7 @@ import { processGMCP } from './gmcp.js';
 import { showFullMap } from './map.js';
 import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
-         parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, parseFollowMoveOutput,
+         parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, parseFollowMoveOutput, parseIdentifyOutput,
          huntTo, stopAutoHunt,
          setXcpMode, sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
@@ -382,6 +382,7 @@ export function handleMessage(msg){
       parseAutoHuntOutput(msg.text);   // server-driven maze navigation
       parseNotHereOutput(msg.text);    // right room name, wrong room: sweep the twins
       parseFollowMoveOutput(msg.text); // a shut door on a hunt trail
+      parseIdentifyOutput(msg.text);   // which copy in this room cannot be hunted
       processTriggers(msg.text); parseWhereOutput(msg.text); parseHuntOutput(msg.text); checkQuest(msg.text);
       break;
     case 'echo': appendOutput(msg.text,'echo'); break;

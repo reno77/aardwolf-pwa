@@ -974,19 +974,108 @@ export function xcpRunCampaignHunt(t){
   }
   const inst=t.whereInstances[t.huntTrickIndex-1];
   t.campaignInstance=inst;
-  // With one instance there is nothing to disambiguate, so skip the hunt test.
-  // It is not merely wasted: `where` and `hunt` index different lists, so the
-  // where-ordinal often means nothing to hunt. `where 6.small` found the mob in
-  // A flower garden, `hunt 6.small` answered "No one in this area by the name
-  // '6.small'.", and the helper sat there. The single instance IS the target.
+  // Travel first, identify afterwards.
+  //
+  // The hunt trick -- the campaign mob is the one that cannot be hunted -- was
+  // being run from wherever the player happened to be standing, BEFORE going
+  // anywhere. That is the one place it cannot work. `hunt` resolves an ordinal
+  // only when you are in the room with the mobs; from elsewhere in the area it
+  // answers "No one in this area by the name '1.senator'.", and from outside the
+  // area "You couldn't find a path to a senator from here." Neither says anything
+  // about which copy is the target, so the identification never happened and the
+  // helper fell back to killing whichever copy `kill <kw>` picked first.
+  //
+  // Proved in The Knossos Senate: from outside, `hunt 1.senator` failed both
+  // ways; standing in the room, `hunt senator`, `hunt 2.senator` and
+  // `hunt 3.senator` all answered "A senator is here!" -- ordinals resolving
+  // perfectly, and every copy huntable, which is how we know the campaign
+  // senator was not among them.
+  //
+  // So go to the room, then test the copies there. One instance still needs no
+  // test at all.
   if(t.whereInstances.length===1){
     appendOutput('[S&D] only one '+t.mob+' here, in '+inst.roomName+' -- going straight there.\n','quest');
-    xcpGotoInstance(t);
+  } else {
+    appendOutput('[S&D] '+t.whereInstances.length+' copies reported; going to '
+      + inst.roomName + ' to find which one is the campaign mob.\n','quest');
+  }
+  xcpGotoInstance(t);
+}
+
+// =============================================================================
+// IDENTIFYING THE CAMPAIGN COPY, IN THE ROOM
+// =============================================================================
+
+const HUNT_UNABLE   = /unable\s+to\s+hunt\s+that\s+target|seem\s+unable\s+to\s+hunt/i;
+const HUNT_IS_HERE  = /\bis here\b/i;
+const HUNT_NO_SUCH  = /no one (?:in this area |here )?by (?:the |that )?name|could ?n[o']?t find a path|you are not hunting/i;
+const IDENTIFY_MAX  = 12;
+
+/**
+ * Standing in the room, work out which copy is the campaign mob.
+ *
+ * `hunt <n>.<kw>` on an ordinary copy answers "A senator is here!"; on the
+ * campaign mob it is refused. That refusal is the only thing that distinguishes
+ * them, and it is available only from here.
+ */
+export function xcpIdentifyHere(t){
+  if(!t || t.is_dead) return;
+  const kw = actionKw(t) || gmkw(t.mob);
+  if(!kw){ xcpKillTarget(t); return; }
+  sndState.pendingIdentify = {t, kw, ord: 1, ts: Date.now()};
+  appendOutput('[S&D] in the room -- testing which copy of "'+t.mob+'" cannot be hunted...\n','quest');
+  sendCmd('hunt '+kw);
+}
+
+function identifyProbe(st){
+  const target = st.ord > 1 ? st.ord + '.' + st.kw : st.kw;
+  st.ts = Date.now();
+  sendCmd('hunt ' + target);
+}
+
+/** Feed MUD output here while an in-room identification is running. */
+export function parseIdentifyOutput(text){
+  const st = sndState.pendingIdentify;
+  if(!st) return;
+  if(Date.now() - st.ts > 8000){ sndState.pendingIdentify = null; return; }
+  const clean = stripAnsi(text);
+  const ordKw = st.ord > 1 ? st.ord + '.' + st.kw : st.kw;
+
+  if(HUNT_UNABLE.test(clean)){
+    // Refused: this is the campaign mob.
+    sndState.pendingIdentify = null;
+    appendOutput('[S&D] copy '+st.ord+' cannot be hunted -- that is the campaign mob.\n','quest');
+    xcpKillTarget(st.t, ordKw);
     return;
   }
-  appendOutput('[S&D] testing instance '+inst.n+' with campaign hunt...\n','quest');
-  xcpContinueCampaignHunt(t, inst);
+  if(HUNT_IS_HERE.test(clean)){
+    if(st.ord >= IDENTIFY_MAX){
+      sndState.pendingIdentify = null;
+      appendOutput('[S&D] tested '+st.ord+' copies of "'+st.t.mob+'" and every one can be hunted,\n'
+        + '       so none of them is your campaign target. Try again after a repop.\n','error');
+      sndState.pendingXcp = null;
+      return;
+    }
+    st.ord++;
+    setTimeout(()=>{ if(sndState.pendingIdentify===st) identifyProbe(st); }, 700);
+    return;
+  }
+  if(HUNT_NO_SUCH.test(clean)){
+    // Run past the number of copies present.
+    sndState.pendingIdentify = null;
+    if(st.ord <= 1){
+      appendOutput('[S&D] hunt cannot see '+t2name(st)+' from here; killing by keyword instead.\n','quest');
+      xcpKillTarget(st.t);
+      return;
+    }
+    appendOutput('[S&D] '+(st.ord-1)+' cop'+(st.ord-1===1?'y':'ies')+' of "'+st.t.mob
+      + '" here, and every one can be hunted -- so none of them is your campaign\n'
+      + '       target. It is not in this room; try again after a repop.\n','error');
+    sndState.pendingXcp = null;
+    return;
+  }
 }
+function t2name(st){ return st.t && st.t.mob ? st.t.mob : st.kw; }
 
 /** Move to the next candidate keyword. Returns false when they are exhausted. */
 export function advanceWhereKeyword(t){
@@ -1097,10 +1186,11 @@ export function xcpGotoInstance(t){
     xcpScheduleAction(t);
     return;
   }
-  // If we're already in the room, just kill.
+  // Already in the room -- but "in the room" is where identification happens, so
+  // go through the same arrival path rather than straight to the kill.
   if(currentRoom.name && currentRoom.name.toLowerCase()===inst.roomName.toLowerCase()){
     appendOutput('[S&D] already in target room.\n','quest');
-    xcpKillTarget(t);
+    onArriveAtInstance(t);
     return;
   }
   appendOutput('[S&D] identified instance in '+inst.roomName+'\n','quest');
@@ -1119,7 +1209,7 @@ export function xcpGotoInstance(t){
   else if(inst.roomName) mapped=resolveRoomByNameAnywhere(inst.roomName, t.areaName);
   if(mapped && mapped.uid){
     appendOutput('[S&D] using mapped path to '+inst.roomName+'\n','quest');
-    gotoRoomUid(mapped.uid, ()=>xcpKillTarget(t));
+    gotoRoomUid(mapped.uid, ()=>onArriveAtInstance(t));
     return;
   }
 
@@ -1149,7 +1239,7 @@ export function xcpGotoInstance(t){
   }
   if(room){
     appendOutput('[S&D] using mapped path to '+inst.roomName+'\n','quest');
-    gotoRoomUid(room.uid, ()=>xcpKillTarget(t));
+    gotoRoomUid(room.uid, ()=>onArriveAtInstance(t));
     return;
   }
   appendOutput('[S&D] room "'+inst.roomName+'" not mapped locally; open Gaardian map manually: '+t.areaName+' - '+inst.roomName+'\n','quest');
@@ -1193,7 +1283,7 @@ export function xcpTryDirectPath(t, inst){
   }
   if(room){
     appendOutput('[S&D] using mapped fallback path to '+inst.roomName+'\n','quest');
-    gotoRoomUid(room.uid, ()=>xcpKillTarget(t));
+    gotoRoomUid(room.uid, ()=>onArriveAtInstance(t));
     return;
   }
   // No mapped route. In a maze the map was never going to help -- the room
@@ -1809,7 +1899,17 @@ export function xcpContinueHuntTrick(t, inst){
   sendCmd('hunt '+inst.n+'.'+t.htkw);
 }
 
-export function xcpKillTarget(t){
+/**
+ * We are in the instance room. In campaign-hunt mode the copies still have to be
+ * told apart, and this is the only place `hunt` can do it.
+ */
+function onArriveAtInstance(t){
+  const many = (t.whereInstances && t.whereInstances.length > 1);
+  if(sndState.xcpMode === 'ch' && many) xcpIdentifyHere(t);
+  else xcpKillTarget(t);
+}
+
+export function xcpKillTarget(t, forcedKw){
   if(t.is_dead) return;
   // A keyword, like `where` and `hunt`. The quoted full name is not something
   // the game can target: standing in the throne room with Queen Trudes in front
@@ -1827,13 +1927,20 @@ export function xcpKillTarget(t){
   // The counter lives on the campaignTargets entry, not on `t`: xcpByIndex builds
   // a fresh copy of the target on every invocation, so anything kept on `t` is
   // forgotten between attempts -- which is exactly what has to persist here.
+  // A copy identified by xcpIdentifyHere is exact, so there is nothing to guess.
+  // The ordinal walk below is the fallback for when identification was not
+  // possible -- it kills copies in turn rather than the same one every time.
   const ct = campaignTargets[t.index-1] || t;
   const seen = (t.whereInstances && t.whereInstances.length) || 1;
-  ct.killOrd = (ct.killOrd || 0) + 1;
-  if(ct.killOrd > Math.max(seen, 8)) ct.killOrd = 1;   // wrap rather than run away
-  const targetKw = ct.killOrd > 1 ? ct.killOrd + '.' + kw : kw;
+  let targetKw = forcedKw;
+  if(!targetKw){
+    ct.killOrd = (ct.killOrd || 0) + 1;
+    if(ct.killOrd > Math.max(seen, 8)) ct.killOrd = 1;   // wrap rather than run away
+    targetKw = ct.killOrd > 1 ? ct.killOrd + '.' + kw : kw;
+  }
   appendOutput('[S&D] killing '+t.mob+' (kill '+targetKw+')'
-    + (ct.killOrd > 1 ? ' -- copy '+ct.killOrd+' of '+seen : '') + '...\n','quest');
+    + (forcedKw ? ' -- the copy that refused to be hunted'
+                : (ct.killOrd > 1 ? ' -- copy '+ct.killOrd+' of '+seen : '')) + '...\n','quest');
   // Watched by parseNotHereOutput: "They aren't here" after this means we are in
   // a room with the right NAME but not the right room. See xcpSweepTwins.
   sndState.pendingKill={t, at:currentRoom.uid, ts:Date.now()};
