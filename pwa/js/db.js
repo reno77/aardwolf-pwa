@@ -256,7 +256,21 @@ export async function initDb() {
   } else {
     appendOutput('[Triggers] Loaded ' + fadoTriggers.length + ' triggers from DB\n', 'system');
   }
-  
+
+  // One-time: switch off the blind six-direction door opener. It predates the
+  // walker, which now handles a closed door by opening the one direction it
+  // wants, and the two fight -- the trigger's stray `op s` drew a locked-door
+  // refusal that the walker blamed on the step in flight and gave up over.
+  // Re-enable it in the triggers panel if you want it back.
+  try {
+    const t51 = sqlDb.exec("SELECT enabled FROM triggers WHERE name='fado_t51'");
+    if(t51.length && t51[0].values.length && t51[0].values[0][0]){
+      sqlDb.run("UPDATE triggers SET enabled=0 WHERE name='fado_t51'");
+      loadTriggersFromDb();
+      appendOutput('[Triggers] Disabled fado_t51 (blind "open all doors"); the walker opens the door it needs\n', 'system');
+    }
+  } catch(e){ /* trigger not present */ }
+
   setInterval(persistDb, 30000);
 }
 
@@ -1433,7 +1447,14 @@ export function seedFadoTriggers() {
     {name:'fado_t48',enabled:true,p:/This chef seems/i,cmd:'strang chef; back chef; ki chef; attsweep'},
     {name:'fado_t49',enabled:true,p:/This termite is/i,cmd:'strang ter; back ter; ki ter; attsweep'},
     {name:'fado_t50',enabled:true,p:/A gentle breeze blows by/i,cmd:'strang gentle; back gentle;ki bree;attgreen'},
-    {name:'fado_t51',enabled:true,p:/is closed/i,cmd:'op e; op w; op n; op s; op u; op d'},
+    // Off by default. Blindly opening all six directions on any "is closed"
+    // line fights the walker, which handles a closed door precisely: it sends
+    // `open <dir>` for the direction it actually wants and retries that step.
+    // Confirmed live in Aardington Estate -- this trigger's stray `op s` drew
+    // "You do not have a key for that door" from a locked exit the walk was
+    // not using, the walker attributed it to the step in flight, and abandoned
+    // a route that was fine.
+    {name:'fado_t51',enabled:false,p:/is closed/i,cmd:'op e; op w; op n; op s; op u; op d'},
     {name:'fado_t52',enabled:true,p:/A blue and green cockatoo is here/i,cmd:'strang blue; back blue;ki blue;attmarbu'},
     {name:'fado_t53',enabled:true,p:/is locked/i,cmd:'pick e;pick w;pick s; pick n; pick s'},
     {name:'fado_t54',enabled:true,p:/Carefully observing/i,cmd:'stran hawk; back hawk;kill hawk;attmarbu2'},

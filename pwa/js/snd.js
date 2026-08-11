@@ -10,7 +10,20 @@ import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 // --- state owned by this module ---
 export let campaignTargets=[]; // S&D target list, built from cp info + cp check
-export let sndState={cpType:'none', cpLevel:0, xcpIndex:0, xcpMode:localStorage.getItem('xcp_mode')||'ch', recallSequence:localStorage.getItem('recall_sequence')||'wear garbage;enter;rem garbage;wear wpn;wear wpn 2'};
+// `wear wpn 2` was two arguments, so it never referred to the wpn2 alias at all.
+// Both weapon slots now go through their aliases (wpn -> poly, wpn2 -> poly2).
+export const DEFAULT_RECALL = 'wear garbage;enter;rem garbage;wear wpn;wear wpn2';
+export let sndState={cpType:'none', cpLevel:0, xcpIndex:0, xcpMode:localStorage.getItem('xcp_mode')||'ch', recallSequence:fixStoredRecall(localStorage.getItem('recall_sequence'))||DEFAULT_RECALL};
+
+/** Repair a stored sequence that carries the `wear wpn 2` typo. */
+function fixStoredRecall(seq){
+  if(!seq) return seq;
+  const fixed = seq.replace(/wear\s+wpn\s+2/gi, 'wear wpn2');
+  if(fixed !== seq){
+    try { localStorage.setItem('recall_sequence', fixed); } catch(e){ /* not fatal */ }
+  }
+  return fixed;
+}
 export let lastCpInfoRaw='';
 export let lastCpCheckRaw='';
 export let lastCampaignRaw='';
@@ -608,12 +621,16 @@ export function noticeTravelProgress(){
 
 export function xcpRecall(t, onComplete){
   // User's recall alias is an equipment sequence, not the simple 'rec' command.
-  const recallSeq=(sndState.recallSequence||'wear garbage;enter;rem garbage;wear wpn;wear wpn 2').split(';');
+  const recallSeq=(sndState.recallSequence||DEFAULT_RECALL).split(';');
   let delay=0;
   for(const cmd of recallSeq){
     const c=cmd.trim();
     if(!c) continue;
-    setTimeout(()=>sendCmdRaw(c), delay);
+    // sendCmd, not sendCmdRaw. Raw skips alias expansion, so `wear wpn` went to
+    // the game as the literal string "wear wpn" -- and `wpn` is the alias for the
+    // actual weapon (`poly`). The recall sequence therefore re-wore nothing and
+    // left the character unarmed after every hop.
+    setTimeout(()=>sendCmd(c), delay);
     delay+=1000;
   }
   // Give Aardwolf time to finish the recall before runto.

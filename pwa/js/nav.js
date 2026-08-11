@@ -211,7 +211,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-2.1';
+export const NAV_BUILD = 'nav-2.2';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;

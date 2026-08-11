@@ -6,7 +6,7 @@ import { showFullMap } from './map.js';
 import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
          parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, huntTo, stopAutoHunt,
-         setXcpMode, sndState, xcpByIndex, xcpNext } from './snd.js';
+         setXcpMode, sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { commandMap } from './state.js';
@@ -30,8 +30,11 @@ export function sendCmd(text){
     return;
   }
   const seq=commandMap[text];
-  if(seq){ sendCmdSequence(seq); }
-  else { sendCmdRaw(text); }
+  if(seq){ sendCmdSequence(seq); return; }
+  // Not an alias itself, but its argument might be: `wear wpn` -> `wear poly`.
+  const expanded=expandAlias(text);
+  if(expanded!==text && expanded.includes(';')){ sendCmdSequence(expanded); return; }
+  sendCmdRaw(expanded);
 }
 export function sendCmdRaw(text){
   if(!ws||!connected){appendOutput('[Offline]\n','error');return;}
@@ -126,6 +129,28 @@ export function queueMove(dir, opts){
   return true;
 }
 
+/**
+ * Substitute an alias used as an ARGUMENT rather than as a whole command.
+ *
+ * `wpn` is an alias for `poly`, so `wear wpn` has to become `wear poly` -- the
+ * MUD has never heard of "wpn". Expansion only ever matched a whole command, so
+ * the recall sequence's `wear wpn` and `wear wpn 2` went to the game verbatim and
+ * did nothing, which is why recall left the character unarmed.
+ *
+ * Deliberately narrow: only the argument, and only when the alias expands to a
+ * SINGLE bare token. `heal` expands to a string of casts, and splicing that into
+ * someone's `get heal` would be a surprise rather than a convenience.
+ */
+function expandArgAlias(cmd){
+  const m = String(cmd).trim().match(/^(\S+)\s+(\S+)$/);
+  if(!m) return cmd;
+  const exp = commandMap[m[2].toLowerCase()];
+  if(!exp) return cmd;
+  const one = String(exp).trim();
+  if(!one || /[;\s]/.test(one)) return cmd;    // not a single bare token
+  return m[1] + ' ' + one;
+}
+
 export function expandAlias(cmd, depth, visited){
   if(depth===undefined) depth=0;
   if(visited===undefined) visited=new Set();
@@ -133,7 +158,7 @@ export function expandAlias(cmd, depth, visited){
   const lower=cmd.trim().toLowerCase();
   if(visited.has(lower)) return cmd; // cycle detected
   const seq=commandMap[lower];
-  if(!seq) return cmd; // not an alias, return as-is
+  if(!seq) return expandArgAlias(cmd);   // not an alias itself; its argument may be
   visited.add(lower);
   const parts=seq.split(';');
   const expanded=[];
@@ -238,7 +263,7 @@ export function submitCmd(){
         localStorage.setItem('recall_sequence', seq);
         appendOutput('[S&D] recall sequence set: '+seq+'\n','system');
       } else {
-        appendOutput('[S&D] current recall sequence: '+(sndState.recallSequence||'wear garbage;enter;rem garbage;wear wpn;wear wpn 2')+'\n','system');
+        appendOutput('[S&D] current recall sequence: '+(sndState.recallSequence||DEFAULT_RECALL)+'\n','system');
       }
       return;
     }
