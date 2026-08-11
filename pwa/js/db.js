@@ -239,6 +239,21 @@ export async function initDb() {
   const joined = reconnectDanglingExits();
   if(joined) appendOutput('[Gaardian] Joined ' + joined + ' room(s) our exits pointed at but the map held separately\n', 'system');
 
+  // One-time: unescape quotes in custom exits already imported. `dir` is part of
+  // the primary key, so this is UPDATE OR IGNORE followed by a sweep of whatever
+  // could not move because the corrected row already existed.
+  try {
+    const esc = "'%' || char(92) || char(39) || '%'";
+    const before = sqlDb.exec('SELECT COUNT(*) FROM exits WHERE dir LIKE ' + esc);
+    const n = before.length ? before[0].values[0][0] : 0;
+    if(n){
+      sqlDb.run('UPDATE OR IGNORE exits SET dir = REPLACE(dir, char(92) || char(39), char(39))'
+        + ' WHERE dir LIKE ' + esc);
+      sqlDb.run('DELETE FROM exits WHERE dir LIKE ' + esc);
+      appendOutput('[Gaardian] Unescaped ' + n + ' custom exit(s) -- they were being typed with backslashes\n', 'system');
+    }
+  } catch(e){ console.error('unescape exits error', e); }
+
   // Aliases live in the table, not in state.js: seed the built-ins once, then
   // the table is the only source of truth so a deletion actually sticks.
   seedAliases();
@@ -547,6 +562,23 @@ const GAARDIAN_DIRS = {0:'n', 1:'e', 2:'s', 3:'w', 4:'u', 5:'d'};
 // exit works rather than something you can type. Import those with level 999 so
 // they still show on the map but never appear in a route.
 const UNTYPEABLE = /^(mobprog|special|unknown)$|\(/i;
+// Some rows are prose about an exit rather than a command to type.
+const IS_PROSE = /\bto (?:transport|travel|get) to\b|\bin order to\b/i;
+
+/**
+ * Turn a Gaardian exit_action into something typeable.
+ *
+ * The dump escapes its quotes: 39 exits are stored as `give \'identification
+ * pass\' \'castle guard\'`. Sent verbatim, the guard receives the backslashes and
+ * keeps the pass, so the way stays shut -- which is what stopped the walk to the
+ * Knossos Senate two rooms short, with the pass apparently handed over.
+ */
+function cleanExitAction(action){
+  return String(action || '')
+    .replace(/\\(['"])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 // Gaardian records how to get past a locked door or a guard -- what the key is,
 // where to buy it and for how much -- in exits.key_desc/key_room. 882 exits
@@ -704,11 +736,14 @@ export function importGaardianExits(gaardianAreaid){
     if(exitType >= 0 && exitType <= 5){
       dir = GAARDIAN_DIRS[exitType];
     } else if(exitType === 6 && exitAction){
-      dir = 'enter ' + String(exitAction).trim().toLowerCase();
+      dir = 'enter ' + cleanExitAction(exitAction).toLowerCase();
     } else if(exitType === 7 && exitAction){
-      // Already a command; send it as written.
-      dir = String(exitAction).trim().toLowerCase();
-      if(UNTYPEABLE.test(dir)) level = 999;
+      // Already a command; send it as written, once the dump's escaped quotes
+      // are unescaped (see cleanExitAction).
+      dir = cleanExitAction(exitAction).toLowerCase();
+      // level 999 is the never-auto-path marker: keep the row so the map can show
+      // it, but do not route a walk through something that is not a command.
+      if(UNTYPEABLE.test(dir) || IS_PROSE.test(dir)) level = 999;
     }
     if(!dir){ stats.skipped++; continue; }
 

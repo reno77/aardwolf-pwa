@@ -211,7 +211,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-2.6';
+export const NAV_BUILD = 'nav-2.8';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -364,6 +364,13 @@ function step(){
     // room this is, so uid mismatches stay expected until the room is anchored.
     walk.blind = !!replan.viaCandidate;
   }
+  // A prerequisite already performed from this room must not be re-planned: the
+  // map still says the way through here is `give ... castle guard`, and we have
+  // given it. Left in, re-pathing would hand the pass over forever.
+  while(path.length && walk.done && isCustomExit(path[0].dir)
+        && walk.done.has(currentRoom.uid + '|' + path[0].dir)){
+    path = path.slice(1);
+  }
   if(!path.length){ finish(true); return; }
   walk.path = path;
   // Keep the tail of the plan so a later re-path failure has something to follow.
@@ -427,6 +434,21 @@ function step(){
     // Trust the room we are actually in over the clock.
     if(currentRoom.uid && currentRoom.uid !== walk.lastFrom){
       onRoomChanged();
+      return;
+    }
+    // A custom exit that did not move us is very often not a movement at all.
+    // 308 of Gaardian's 786 custom exits are prerequisites -- `give
+    // 'identification pass' 'castle guard'`, `Knock door`, `say see a manager`,
+    // `wave your hands wildly`. They satisfy a guard or open a way, and the step
+    // AFTER them is the move. Waiting for a room change that was never coming
+    // timed the walk out in The Castle of Knossos with the pass already handed
+    // over, two steps short of the Senate.
+    if(isCustomExit(walk.lastDir)){
+      walk.done = walk.done || new Set();
+      walk.done.add(walk.lastFrom + '|' + walk.lastDir);
+      appendOutput('[nav] "' + walk.lastDir + '" moved us nowhere; taking it as a'
+        + ' prerequisite and carrying on\n', 'system');
+      step();
       return;
     }
     // Genuinely still in the same room: the command may have been swallowed.
