@@ -1089,7 +1089,7 @@ function startIdentify(t, then){
   if(!t || t.is_dead) return false;
   const kw = actionKw(t) || gmkw(t.mob);
   if(!kw) return false;
-  sndState.pendingIdentify = {t, kw, ord: 1, ts: Date.now(), then};
+  sndState.pendingIdentify = {t, kw, ord: 1, ts: Date.now(), then, awaiting: true};
   appendOutput('[S&D] ' + (then === 'kill' ? 'in the room -- testing' : 'testing')
     + ' which copy of "'+t.mob+'" cannot be hunted...\n','quest');
   sendCmd('hunt '+kw);
@@ -1099,6 +1099,7 @@ function startIdentify(t, then){
 function identifyProbe(st){
   const target = st.ord > 1 ? st.ord + '.' + st.kw : st.kw;
   st.ts = Date.now();
+  st.awaiting = true;      // exactly one reply advances the ordinal
   sendCmd('hunt ' + target);
 }
 
@@ -1107,11 +1108,22 @@ export function parseIdentifyOutput(text){
   const st = sndState.pendingIdentify;
   if(!st) return;
   if(Date.now() - st.ts > 8000){ sndState.pendingIdentify = null; return; }
+  // One RECOGNISED reply per probe. MUD output arrives in whatever chunks the
+  // network gives, and two of them matching "is here" advanced the ordinal twice
+  // -- the probe went `hunt senator` then `hunt 3.senator`, so copy 2 was never
+  // tested. If the campaign mob had been copy 2 the search would have missed it
+  // and reported the target absent.
+  //
+  // The flag is cleared only in the branches that act, so an auction line or a
+  // gossip arriving between the command and its answer passes through instead of
+  // swallowing the probe.
+  if(st.awaiting === false) return;
   const clean = stripAnsi(text);
   const ordKw = st.ord > 1 ? st.ord + '.' + st.kw : st.kw;
 
   if(HUNT_UNABLE.test(clean)){
     // Refused: this is the campaign mob.
+    st.awaiting = false;
     sndState.pendingIdentify = null;
     appendOutput('[S&D] copy '+st.ord+' cannot be hunted -- that is the campaign mob.\n','quest');
     st.t.huntOrdKw = ordKw;          // the exact copy, for the kill
@@ -1126,6 +1138,7 @@ export function parseIdentifyOutput(text){
     return;
   }
   if(HUNT_IS_HERE.test(clean)){
+    st.awaiting = false;
     if(st.ord >= IDENTIFY_MAX){
       sndState.pendingIdentify = null;
       if(st.then === 'locate'){
@@ -1144,6 +1157,7 @@ export function parseIdentifyOutput(text){
   }
   if(HUNT_NO_SUCH.test(clean)){
     // Run past the number of copies hunt can see.
+    st.awaiting = false;
     sndState.pendingIdentify = null;
     // Identifying before travelling is an optimisation, not the only route: if
     // hunt cannot resolve the ordinals from here -- outside the area, or a
