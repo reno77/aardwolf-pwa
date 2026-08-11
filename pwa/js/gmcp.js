@@ -2,6 +2,7 @@
 
 import { canonicalArea, matchAardwolfToGaardian, mergeAreaAliases, persistDb, sqlDb } from './db.js';
 import { renderRooms, onRoomChanged } from './nav.js';
+import { noticeQuest } from './quest.js';
 import { noticeTravelProgress, sndState, xcpStep } from './snd.js';
 import { appendOutput, stripAnsi } from './ui.js';
 // --- state owned by this module ---
@@ -271,6 +272,10 @@ export function processGMCP(key, data){
     if(!isNaN(lv)) charLevel = lv;
   }
   if(key==='comm.quest'){
-    appendOutput('Quest update: '+JSON.stringify(data)+'\n','quest');
+    // This used to print the raw JSON and stop there, while the quest target,
+    // its room and its area were parsed -- badly, out of the text -- by six
+    // guessed regexes in ui.js that only filled two labels. The structured feed
+    // is authoritative and carries the room, which the text never did.
+    noticeQuest(data);
   }
 }

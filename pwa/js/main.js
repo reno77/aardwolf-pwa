@@ -51,4 +51,5 @@ initDb().then(()=>{
   appendOutput('Swipe: rooms → aliases → triggers\n','system');
   appendOutput('Shortcut row: tap to send, hold to edit, + to add\n','system');
   appendOutput('Commands: /runto, /aliases, /triggers, /rooms, /map, /cpinfo, /cpcheck, /xcp, /xcpmode, /ht, /qw, /export, /import, /sync\n','system');
+  appendOutput('Quests: /quest shows the target, /xq goes and kills it, /navto <room name> walks anywhere mapped\n','system');
 });

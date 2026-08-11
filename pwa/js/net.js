@@ -12,6 +12,7 @@ import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseW
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { commandMap } from './state.js';
+import { doXq, questInfo } from './quest.js';
 import { openTransport } from './transport.js';
 import { setSyncBase, setSyncToken, syncBase, syncMap, syncOnLogin, syncReset,
          syncStatus } from './sync.js';
@@ -247,7 +248,9 @@ export function submitCmd(){
     }
     if(cmd==='areas'){ harvestAreaKeywords(); return; }
     if(cmd==='navdiag'){ navDiag(parts.slice(1).join(' ').trim()); return; }
-    if(cmd==='navto'){ doNavTo(parts[1]); return; }
+    // The whole argument, not parts[1]: a room name has spaces in it, and
+    // `/navto Inside the Kitchen` used to search for a room called "Inside".
+    if(cmd==='navto'){ doNavTo(parts.slice(1).join(' ')); return; }
     if(cmd==='navcoord'){
       const m=parts.slice(1).join(' ').match(/(-?\d+)\s*[, ]\s*(-?\d+)/);
       if(!m){ appendOutput('Usage: /navcoord <x>,<y>\n','system'); return; }
@@ -261,6 +264,8 @@ export function submitCmd(){
     if(cmd==='xcpmode'){ setXcpMode(parts[1]||''); return; }
     if(cmd==='ht'){ doHuntTrick(parts.slice(1).join(' ').trim()); return; }
     if(cmd==='qw'){ doQuickWhere(parts.slice(1).join(' ').trim()); return; }
+    if(cmd==='xq'){ doXq(); return; }
+    if(cmd==='quest' || cmd==='qinfo'){ questInfo(); return; }
     if(cmd==='sync'){ syncMap({}); return; }
     if(cmd==='syncstatus'){ syncStatus(); return; }
     if(cmd==='syncreset'){ syncReset(); return; }

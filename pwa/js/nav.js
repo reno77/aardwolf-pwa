@@ -211,7 +211,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-4.7';
+export const NAV_BUILD = 'nav-4.8';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -976,8 +976,67 @@ export function renderRooms(){
  * With no argument it prints the current uid, which is how you collect one on
  * the way past.
  */
+/** A uid is a GMCP room number, or the synthetic id of an imported room. */
+function looksLikeUid(s){ return /^\d+$/.test(s) || /^gaardian:\d+:\d+$/.test(s); }
+
+/**
+ * Resolve a room NAME for /navto, reporting rather than guessing.
+ *
+ * A name is what a player has -- off a quest, a `where`, or a wiki page -- and
+ * `/navto Inside the Kitchen` was not expressible at all: the command took only
+ * the first word of its argument, so it searched for a room called "Inside".
+ *
+ * Ambiguity is printed rather than resolved: picking the first of 51 rooms called
+ * "The Gauntlet" would send the walk somewhere arbitrary, and the uid the list
+ * prints is the handle that removes the ambiguity for good.
+ */
+function resolveNavName(name){
+  let rows = [];
+  try {
+    const r = sqlDb.exec(
+      'SELECT uid, name, area FROM rooms WHERE LOWER(name)=LOWER(?)', [name]);
+    rows = r.length ? r[0].values : [];
+    if(!rows.length){
+      const r2 = sqlDb.exec(
+        'SELECT uid, name, area FROM rooms WHERE LOWER(name) LIKE ?', ['%'+name.toLowerCase()+'%']);
+      rows = r2.length ? r2[0].values : [];
+    }
+  } catch(e){ /* reported by the caller */ }
+  if(!rows.length){
+    appendOutput('[nav] no room called "'+name+'" in your map. It may be in an area you\n'
+      + '      have not imported -- walk in once, or /xq if it is a quest target.\n','error');
+    return null;
+  }
+  // Prefer somewhere we can actually get to: an unreachable exact match is worse
+  // than a reachable one when the name repeats across areas.
+  const reachable = rows.filter(([u]) => u !== currentRoom.uid && findPath(currentRoom.uid, u));
+  const pick = reachable.length === 1 ? reachable
+             : (rows.length === 1 ? rows : null);
+  if(!pick){
+    const list = (reachable.length ? reachable : rows).slice(0, 12);
+    appendOutput('[nav] "'+name+'" matches '+rows.length+' room(s)'
+      + (reachable.length && reachable.length !== rows.length
+          ? ', '+reachable.length+' of them reachable' : '')
+      + ' -- /navto <uid> to choose:\n','system');
+    for(const [u, n, a] of list){
+      const p = findPath(currentRoom.uid, u);
+      appendOutput('[nav]   ' + u + ' "' + n + '" [' + (a||'?') + '] '
+        + (p ? p.length + ' steps' : 'no route') + '\n','system');
+    }
+    return null;
+  }
+  return String(pick[0][0]);
+}
+
 export function doNavTo(target){
-  const uid = String(target || '').trim();
+  let uid = String(target || '').trim();
+  // A name is accepted as well as a uid, because a name is what the player has.
+  if(uid && !looksLikeUid(uid)){
+    if(!sqlDb){ appendOutput('[nav] no map database\n','error'); return; }
+    const resolved = resolveNavName(uid);
+    if(!resolved) return;
+    uid = resolved;
+  }
   if(!uid){
     appendOutput('[nav] you are in ' + (currentRoom.uid || '?')
       + ' "' + (currentRoom.name || '?') + '" -- /navto ' + (currentRoom.uid || '<uid>')

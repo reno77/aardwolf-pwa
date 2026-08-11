@@ -814,6 +814,9 @@ export function xcpAbandonTarget(t, reason){
   sndState.pendingTwinProbe=null;
   if(isWalking()) cancelWalk(reason);
   if(t) t.skipped=reason || 'skipped';
+  // A quest target is not in campaignTargets, so the count below would report on
+  // an unrelated campaign and tell the player to type /xcp.
+  if(t && t.isQuest && questHooks && questHooks.abandonNote){ questHooks.abandonNote(); return; }
   const remaining=campaignTargets.filter(x=>!x.is_dead && !x.skipped);
   // Deliberately does NOT chain into the next target on its own. Aardwolf's
   // 'help policies7' names "read campaign information to automatically go to
@@ -2695,7 +2698,21 @@ export function parseHuntOutput(text){
   }
 }
 
+// A quest target runs through this same pipeline (see quest.js), but the two
+// places that reach for `cp check` have to do something else for it. quest.js
+// registers those here rather than being imported: gmcp.js already imports both
+// modules, and one more edge in that cycle buys nothing.
+let questHooks = null;
+export function setQuestHooks(h){ questHooks = h; }
+
 export function xcpVerifyKill(t, onStillAlive){
+  // A quest is confirmed by comm.quest {"action":"killed"}, which the MUD sends
+  // unprompted -- so there is nothing to poll, and `cp check` would be answering
+  // a question about a campaign this character may not even be on.
+  if(t && t.isQuest && questHooks && questHooks.verifyKill){
+    questHooks.verifyKill(t, onStillAlive);
+    return;
+  }
   // Send cp check; callback runs after result arrives
   sndState.pendingCpCheckCallback=(dead)=>{
     if(dead){

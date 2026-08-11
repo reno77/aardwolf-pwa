@@ -392,6 +392,56 @@ mapped route anywhere — so it now falls back to the server's own
 `runto <keyword>` to get into the target area, waits for GMCP to confirm arrival,
 and retries the local path from inside (once; `opts.noAreaHop` stops recursion).
 
+## 5a. Quests (`/xq`) — the same pipeline, better input
+
+A quest and a campaign target are the same problem: a mob, somewhere, that has to
+be reached and killed. `pwa/js/quest.js` does not reimplement any of that — it
+builds a target object of the shape `buildCpTargets` makes and hands it to
+`xcpStep`, so area keyword → runto → hunt trick → `where` → `walkTo` → health gate
+all work unchanged.
+
+**Read the quest from GMCP, never from the text.** `comm.quest` carries the mob,
+the **room** and the area as three separate fields:
+
+```
+comm.quest {"action":"start","targ":"a swamp ape","room":"Swamp Ape Enclosure",
+            "area":"Aardwolf Zoological Park","timer":52}
+```
+
+That is strictly more than `cp check` gives, which has one location field that is
+sometimes an area and sometimes a room and has to be guessed at. Before this, the
+client dumped the JSON to the screen and separately ran six *guessed* regexes over
+the text (`You have been tasked to kill X in the area of Y.`) to fill two labels in
+a panel — the room was never captured at all. `help quest` does not document the
+text output, so do not try to parse it; the documented fields are on the
+[GMCP page](https://www.aardwolf.com/wiki/index.php/Clients/GMCP).
+
+Because the room is known, `/xq` resolves it with `resolveRoomByNameAnywhere`,
+which imports the area from the reference map if it is missing, and goes straight
+to walk-and-kill. It only falls back to the campaign path (`where`, hunt trick,
+sweeping identically-named rooms) when the room does not resolve.
+
+Two places in snd.js had to become quest-aware, and they do it through
+`setQuestHooks` rather than an import — gmcp.js already imports both modules:
+
+- **Verification.** A campaign kill is confirmed by re-reading `cp check`. A quest
+  kill arrives unprompted as `comm.quest {"action":"killed"}`, so there is nothing
+  to poll. If it does not arrive within 9s, whatever died was the wrong copy and
+  the sweep continues.
+- **Abandoning.** `xcpAbandonTarget` counts what is left in `campaignTargets`; a
+  quest target is not in that list, so it would report on an unrelated campaign
+  and tell the player to type `/xcp`.
+
+Handled actions: `start`, `status` (both the active form and `status:"ready"`),
+`killed`, `comp`, `fail`, `timeout`, `warning`, `reset`, `ready`, and
+`targ:"missing"` — which means someone else killed it, so there is nothing to walk
+to and `/xq` says so instead of sending the walker at an empty room name.
+
+`/navto` also takes a room **name** now, not just a uid. It used to receive only
+`parts[1]`, so `/navto Inside the Kitchen` searched for a room called "Inside".
+Ambiguity is printed with the uids rather than resolved — picking the first of 51
+rooms called "The Gauntlet" would walk somewhere arbitrary.
+
 ## 6. Inventory (`dinv`)
 
 Modelled on [Aardurel/aard-plugins](https://github.com/Aardurel/aard-plugins).
