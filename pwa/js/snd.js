@@ -1146,9 +1146,8 @@ export function parseIdentifyOutput(text){
         xcpStep(st.t);
         return;
       }
-      appendOutput('[S&D] tested '+st.ord+' copies of "'+st.t.mob+'" and every one can be hunted,\n'
-        + '       so none of them is your campaign target. Try again after a repop.\n','error');
-      sndState.pendingXcp = null;
+      appendOutput('[S&D] tested '+st.ord+' copies of "'+st.t.mob+'" and every one can be hunted.\n','quest');
+      xcpSweepCopies(st.t, st.ord);
       return;
     }
     st.ord++;
@@ -1177,9 +1176,8 @@ export function parseIdentifyOutput(text){
       return;
     }
     appendOutput('[S&D] '+(st.ord-1)+' cop'+(st.ord-1===1?'y':'ies')+' of "'+st.t.mob
-      + '" here, and every one can be hunted -- so none of them is your campaign\n'
-      + '       target. It is not in this room; try again after a repop.\n','error');
-    sndState.pendingXcp = null;
+      + '" here, and every one can be hunted.\n','quest');
+    xcpSweepCopies(st.t, st.ord-1);
     return;
   }
 }
@@ -2055,7 +2053,48 @@ function onArriveAtInstance(t){
   else xcpKillTarget(t);
 }
 
-export function xcpKillTarget(t, forcedKw){
+/**
+ * No copy refused the hunt, so work through them.
+ *
+ * "Nothing refused" does NOT mean the target is absent -- it means this mob is not
+ * flagged unhuntable, and the hunt trick simply cannot see it. Proved with a
+ * senator: seven copies all huntable, copy 2 included once the skipped ordinal
+ * was fixed, and the campaign cleared on the eighth kill with the room emptied.
+ * The helper had been reporting "not in this room; try again after a repop" and
+ * stopping, which was wrong twice over -- wrong conclusion, and it gave up on a
+ * target that was standing right there.
+ *
+ * Kill by plain keyword rather than by ordinal: as each copy dies the next becomes
+ * the first, so the keyword walks the room on its own, and no ordinal goes stale
+ * underneath the sweep. Verify after each, stop the moment the campaign clears.
+ */
+export function xcpSweepCopies(t, count){
+  if(!t || t.is_dead) return;
+  t.copiesLeft = Math.max(1, Math.min(count || 1, 15)) + 2;   // a little slack for repops
+  appendOutput('[S&D] no copy refused the hunt, so this mob is not flagged -- the trick\n'
+    + '       cannot pick it out. Working through the copies one at a time.\n','quest');
+  killNextCopy(t);
+}
+
+function killNextCopy(t){
+  if(!t || t.is_dead) return;
+  if(t.copiesLeft <= 0){
+    appendOutput('[S&D] worked through every copy of "'+t.mob+'" here without the campaign\n'
+      + '       clearing. Either more will repop, or it really is elsewhere.\n','error');
+    sndState.pendingXcp = null;
+    return;
+  }
+  t.copiesLeft--;
+  const kw = actionKw(t) || gmkw(t.mob);
+  // Plain keyword: the first copy in the room, which is a different mob each time
+  // as the previous one dies.
+  xcpKillTarget(t, kw, ()=>{
+    appendOutput('[S&D] not that one; '+t.copiesLeft+' more to try.\n','quest');
+    setTimeout(()=>killNextCopy(t), 1200);
+  });
+}
+
+export function xcpKillTarget(t, forcedKw, onStillAlive){
   if(t.is_dead) return;
   // A keyword, like `where` and `hunt`. The quoted full name is not something
   // the game can target: standing in the throne room with Queen Trudes in front
@@ -2102,11 +2141,11 @@ export function xcpKillTarget(t, forcedKw){
       setTimeout(whenDone, 1500);
       return;
     }
-    xcpVerifyKill(t, ()=>{
+    xcpVerifyKill(t, onStillAlive || (()=>{
       appendOutput('[S&D] '+t.mob+' is still alive'
         + (charState === STATE_FIGHTING ? ' and the fight is still going' : '')
-        + '; /xcp '+t.index+' to try again.\n','quest');
-    });
+        + '; /xcp to try again.\n','quest');
+    }));
   };
   setTimeout(whenDone, 2500);
 }
