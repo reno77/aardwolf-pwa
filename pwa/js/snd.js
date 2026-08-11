@@ -543,29 +543,68 @@ export function mergeCpCheck(checkList){
   appendOutput('[S&D] cp check: '+checkList.length+' still to kill'
     + (done ? ', '+done+' newly done' : '')
     + ' ('+campaignTargets.filter(t=>t.completed).length+'/'+campaignTargets.length+' complete)\n','quest');
+  // Print the numbers /xcp takes, so there is no guessing which line is which.
+  // They are the outstanding targets, in this order -- the whole point of the
+  // change in xcpByIndex.
+  liveTargets().forEach((t, i) => {
+    appendOutput('        /xcp '+(i+1)+'  '+t.mob+'  ('+t.areaName+')\n','quest');
+  });
   renderCampaign();
 }
 
 export function xcpNext(){
   if(sndState.cpType==='none'){ appendOutput('[S&D] Not on a campaign.\n','error'); return; }
-  for(const t of campaignTargets){
-    if(t.is_dead) continue;
-    xcpByIndex(t.index);
-    return;
-  }
-  appendOutput('[S&D] No reachable live targets.\n','error');
+  // The first outstanding target -- by live position, which is what xcpByIndex
+  // now counts. Passing t.index here would mean "the t.index-th LIVE target",
+  // which is a different target as soon as anything has died.
+  if(liveTargets().length){ xcpByIndex(1); return; }
+  appendOutput('[S&D] no live targets left.\n','error');
 }
 
+/** The targets still to kill, in the order `cp check` prints them. */
+export function liveTargets(){
+  return campaignTargets.filter(t => !t.is_dead && !t.skipped);
+}
+
+/**
+ * `/xcp <n>` counts the targets that are STILL OUTSTANDING.
+ *
+ * It used to index the whole campaign, dead ones included, while `cp check`
+ * prints only what is left -- so after ten kills the two remaining lines read as
+ * 1 and 2 were internally 9 and 12, and `/xcp 2` picked something already dead.
+ * That misfired three times in one session, twice dragging the character across
+ * the world to the wrong target. The number now means what the game just showed.
+ *
+ * A name works too: `/xcp boy` or `/xcp trumpet`, which does not shift at all.
+ */
 export function xcpByIndex(index, overrideKw){
-  const idx=parseInt(index);
+  const raw = String(index == null ? '' : index).trim();
+  const idx=parseInt(raw);
   if(idx===0){ sndState.xcpIndex=0; sndState.shortMobName=''; sndState.pendingXcp=null; sndState.xcpAwaitingArea=null; appendOutput('[S&D] xcp target cleared.\n','system'); return; }
-  const t=campaignTargets[idx-1];
-  if(!t){ appendOutput('[S&D] Invalid xcp index: '+index+'\n','error'); return; }
-  if(t.type==='unknown'){
-    appendOutput('[S&D] Target #'+idx+' location unknown; will discover via where.\n','quest');
+  const live = liveTargets();
+  let t = null;
+  if(/^\d+$/.test(raw)){
+    t = live[idx-1];
+    if(!t){
+      appendOutput('[S&D] there '+(live.length===1?'is':'are')+' only '+live.length
+        + ' target'+(live.length===1?'':'s')+' left; /campaign to see them.\n','error');
+      return;
+    }
+  } else if(raw){
+    // Match on the mob name -- immune to the list shifting under you.
+    const hits = live.filter(x => String(x.mob||'').toLowerCase().includes(raw.toLowerCase()));
+    if(!hits.length){ appendOutput('[S&D] no live target matching "'+raw+'".\n','error'); return; }
+    if(hits.length > 1){
+      appendOutput('[S&D] "'+raw+'" matches '+hits.map(h=>h.mob).join(', ')+' -- be more specific.\n','error');
+      return;
+    }
+    t = hits[0];
   }
-  if(t.is_dead){ appendOutput('[S&D] Target #'+idx+' already dead.\n','system'); return; }
-  sndState.xcpIndex=idx;
+  if(!t){ appendOutput('[S&D] Invalid xcp target: '+index+'\n','error'); return; }
+  if(t.type==='unknown'){
+    appendOutput('[S&D] '+t.mob+': exact room unknown; will discover via where.\n','quest');
+  }
+  sndState.xcpIndex=t.index;
   sndState.shortMobName=t.kw;
   sndState.pendingXcp=null;
   sndState.xcpAwaitingArea=null;
@@ -573,7 +612,7 @@ export function xcpByIndex(index, overrideKw){
   // this one off sweeping rooms the moment the game says "They aren't here".
   sndState.pendingKill=null;
   sndState.pendingTwinProbe=null;
-  appendOutput('[S&D] xcp '+idx+': '+t.mob+' ('+t.type+' in '+t.areaName+')\n','quest');
+  appendOutput('[S&D] xcp: '+t.mob+' ('+t.type+' in '+t.areaName+')\n','quest');
   let htkw = overrideKw || t.htkwOverride || huntTrickKw(t.mob);
   let kw = gmkw(t.mob);
   const pending={...t, recallSent:false, located:false, roomQueue:[], roomIndex:0, whereInstances:null, huntTrickIndex:1, campaignInstance:null, htkw:htkw, kw:kw};
