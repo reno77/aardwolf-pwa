@@ -13,8 +13,8 @@ android {
         targetSdk = 33
         // Bump on every build you hand to a device, or Android silently keeps the
         // installed one and you debug a fix that is not there.
-        versionCode = 27
-        versionName = "3.6"
+        versionCode = 28
+        versionName = "3.7"
     }
 
     // The web client is NOT copied into the app -- the app compiles the live

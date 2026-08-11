@@ -1,9 +1,10 @@
 // snd.js -- extracted from index.html
 
-import { canonicalArea, findAreaAnywhere, gaardianDb, resolveRoomByNameAnywhere, sqlDb } from './db.js';
+import { canonicalArea, findAreaAnywhere, gaardianDb, gaardianPath,
+         resolveRoomByNameAnywhere, sqlDb } from './db.js';
 import { currentRoom, charState, charLevel, STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
-import { findPath, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo,
+import { findPath, planRoute, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo,
          walkToCoords } from './nav.js';
 import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
          parseRuntoNote, rememberEntryHint, entryHint, landmarkKeyword } from './areas.js';
@@ -186,6 +187,24 @@ function keyKeyword(keyName){
  * located and walked to, and then it stops and says so, because killing it is a
  * decision rather than a step.
  */
+/**
+ * Would fetching the key mean going back through the door that is blocking us?
+ *
+ * The Trophy room in Aardington has exactly one exit: the skeleton-key door we
+ * just failed to open. The key is in The Earl's den, and every route there starts
+ * by going back through that door -- so the fetch is circular and cannot work.
+ * The helper tried anyway, which left the character shut in a room it could not
+ * leave, needing a recall to get out.
+ */
+function fetchWouldCrossGate(gate, roomUid){
+  if(!gate || !gate.dir) return false;
+  const plan = planRoute(currentRoom.uid, roomUid);
+  let path = plan && plan.path;
+  if(!path) path = gaardianPath(currentRoom.uid, roomUid);
+  if(!path || !path.length) return false;                 // nothing to judge
+  return path[0].dir === gate.dir && String(gate.fromUid) === String(currentRoom.uid);
+}
+
 /** 'a large mahogany desk' -> 'desk'; the game targets on one keyword. */
 function lastWord(s){
   const w = String(s||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
@@ -237,6 +256,12 @@ function fetchKeyFromContainer(t, gate, resume){
   if(boughtKeys.has(tag)) return false;
   const room = resolveRoomByNameAnywhere(gate.keyRoom, t && t.areaName);
   if(!room || !room.uid) return false;
+  if(fetchWouldCrossGate(gate, room.uid)){
+    appendOutput('[S&D] '+(gate.keyName||'the key')+' is in "'+src.container+'" ('+gate.keyRoom
+      + '), but the only way there is back through the door I cannot open.\n'
+      + '       Get the key yourself, then /xcp again.\n','error');
+    return false;
+  }
   boughtKeys.add(tag);
   const box = lastWord(src.container);
   const keyKw = keyKeyword(gate.keyName);
@@ -292,6 +317,11 @@ function tryBuyKeyThen(t, gate, resume){
   if(boughtKeys.has(tag)) return false;         // already tried this gate
   const shop = resolveRoomByNameAnywhere(gate.keyRoom, t && t.areaName);
   if(!shop || !shop.uid) return false;
+  if(fetchWouldCrossGate(gate, shop.uid)){
+    appendOutput('[S&D] '+(gate.keyName||'the key')+' is sold in '+gate.keyRoom
+      + ', but the only way there is back through the door I cannot open.\n','error');
+    return false;
+  }
   boughtKeys.add(tag);
 
   const kw = keyKeyword(gate.keyName);
