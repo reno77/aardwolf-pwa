@@ -19,6 +19,7 @@
 //     with "is not available here". A custom exit is now simply typed.
 
 import { gaardianCandidateUids, sqlDb } from './db.js';
+import { parseKeySource } from './keys.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,
          STATE_RUNNING } from './gmcp.js';
@@ -149,21 +150,54 @@ let lastGate = null;
 export function lastGateInfo(){ return lastGate; }
 export function clearGateInfo(){ lastGate = null; }
 
-function reportKeyFor(fromUid, dir){
-  if(!sqlDb || !fromUid || !dir) return false;
+function keyRowFor(uid, dir){
   try {
     const r = sqlDb.exec('SELECT key_name, key_desc, key_room FROM exits WHERE from_uid=? AND dir=?',
-      [String(fromUid), dir]);
-    if(!r.length || !r[0].values.length) return false;
-    const [keyName, keyDesc, keyRoom] = r[0].values[0];
-    if(!keyName && !keyDesc) return false;
-    lastGate = {fromUid: String(fromUid), dir, keyName: keyName || null,
-                keyDesc: keyDesc || null, keyRoom: keyRoom || null};
-    appendOutput('[nav] you need ' + (keyName || 'a key') + ' for that way'
-      + (keyRoom ? ' -- try "' + keyRoom + '"' : '') + '\n', 'quest');
-    if(keyDesc) appendOutput('       ' + keyDesc + '\n', 'quest');
-    return true;
-  } catch(e){ return false; }
+      [String(uid), dir]);
+    if(r.length && r[0].values.length){
+      const row = r[0].values[0];
+      if(row[0] || row[1]) return row;
+    }
+  } catch(e){ /* no row */ }
+  return null;
+}
+
+function reportKeyFor(fromUid, dir){
+  if(!sqlDb || !fromUid || !dir) return false;
+  // The live uid first -- but a room that was never identified keeps its Gaardian
+  // twin as a separate row, and the key note is on THAT one. Which is the case
+  // that matters: an unidentified room is exactly where the walker gets stuck,
+  // and reporting nothing there is how "the way is guarded" lost the note saying
+  // which key and where to get it.
+  let row = keyRowFor(fromUid, dir);
+  if(!row){
+    for(const c of gaardianCandidateUids(fromUid)){
+      row = keyRowFor(c, dir);
+      if(row) break;
+    }
+  }
+  if(!row) return false;
+  const [keyName, keyDesc, keyRoom] = row;
+  const src = parseKeySource(keyDesc);
+  lastGate = {fromUid: String(fromUid), dir, keyName: keyName || null,
+              keyDesc: src.note || null, keyRoom: keyRoom || null, source: src};
+  appendOutput('[nav] you need ' + (keyName || 'a key') + ' for that way\n', 'quest');
+  // Say what to DO, not just what the map happens to store. The note is the only
+  // lead there is, and for two thirds of the 882 of them the answer is "a named
+  // mob is carrying it".
+  if(src.kind === 'mob'){
+    appendOutput('       it is carried by ' + src.mob + '\n', 'quest');
+  } else if(src.kind === 'buy'){
+    appendOutput('       buy it' + (src.who ? ' from ' + src.who : '')
+      + (src.price ? ' for ' + src.price + ' gold' : '')
+      + (keyRoom ? ', in "' + keyRoom + '"' : '') + '\n', 'quest');
+  } else if(src.kind === 'quest'){
+    appendOutput('       area quest reward -- not something to fetch\n', 'quest');
+  } else if(src.note){
+    appendOutput('       ' + src.note + '\n', 'quest');
+  }
+  if(keyRoom && src.kind !== 'buy') appendOutput('       map says: "' + keyRoom + '"\n', 'quest');
+  return true;
 }
 
 // =============================================================================
@@ -177,7 +211,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-1.9';
+export const NAV_BUILD = 'nav-2.0';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;

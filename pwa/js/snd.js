@@ -162,6 +162,41 @@ function keyKeyword(keyName){
   return w.length ? w[w.length-1] : '';
 }
 
+/**
+ * Deal with a locked exit, whichever way the map says the key is obtained.
+ *
+ * The note was only ever read for a purchase, and purchases are 24 of the 882
+ * notes Gaardian carries. 644 of them say a named mob is holding it. So the
+ * common case -- by a wide margin -- was the one that produced nothing at all.
+ *
+ * A purchase is fetched automatically: it is a walk and a `buy`. A mob is
+ * located and walked to, and then it stops and says so, because killing it is a
+ * decision rather than a step.
+ */
+function tryGetKeyThen(t, gate, resume){
+  const src = gate && gate.source;
+  if(src && src.kind === 'mob'){
+    const tag = gate.fromUid + '|' + gate.dir;
+    if(boughtKeys.has(tag)) return false;
+    boughtKeys.add(tag);
+    const kw = gmkw(src.mob) || whereKw(src.mob);
+    appendOutput('[S&D] the key ('+(gate.keyName||'?')+') is on '+src.mob+'.\n','quest');
+    if(!kw){
+      appendOutput('[S&D] no keyword to search on; find it yourself, then /xcp '
+        + (t ? t.index : '') + '.\n','error');
+      return false;
+    }
+    appendOutput('[S&D] locating it (where '+kw+')...\n','quest');
+    sendCmd('where '+kw);
+    // Deliberately not chained into a kill. Finding the mob is navigation;
+    // killing it is a choice, and the player is the one making it.
+    appendOutput('[S&D] kill '+src.mob+', take the key, then /xcp '
+      + (t ? t.index : '') + ' to carry on.\n','quest');
+    return false;
+  }
+  return tryBuyKeyThen(t, gate, resume);
+}
+
 function tryBuyKeyThen(t, gate, resume){
   if(!gate || !gate.keyName || !gate.keyRoom) return false;
   const tag = gate.fromUid + '|' + gate.dir;
@@ -199,7 +234,7 @@ export function gotoRoomUid(toUid, onDone, opts){
     const gate = lastGateInfo();
     if(gate && !(opts && opts.noKeyBuy)){
       const t = sndState.pendingXcp;
-      if(tryBuyKeyThen(t, gate, ()=>gotoRoomUid(toUid, onDone, {...(opts||{}), noKeyBuy:true}))) return;
+      if(tryGetKeyThen(t, gate, ()=>gotoRoomUid(toUid, onDone, {...(opts||{}), noKeyBuy:true}))) return;
     }
     // A room can be present in the local map and still be unreachable. Importing
     // an area from Gaardian does not connect it to anything you have actually
