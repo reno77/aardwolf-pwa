@@ -52,6 +52,17 @@ const BUY = [
   /\bbuy\s+([\w-]+)/i,
   /\b(?:bought|sold)\s+(?:from|by)\s+([\w' -]+)/i,
 ];
+// "The key is inside a large mahogany desk." -- not carried by anyone and not for
+// sale, so neither of the branches above applies. The Aardington skeleton key is
+// one of these, and the helper walked to the right room, sent `buy key`, announced
+// "bought a skeleton key" without checking, walked back, and hit the same locked
+// door. Opening the container and taking the key is a different action, so it is a
+// different kind.
+const CONTAINER = [
+  /\bkeys?\s+is\s+(?:inside|in)\s+(?:a\s+|an\s+|the\s+)?([\w' -]+?)\s*[.,]?$/i,
+  /\b(?:found|hidden)\s+(?:inside|in)\s+(?:a\s+|an\s+|the\s+)?([\w' -]+?)\s*[.,]?$/i,
+  /\bopen\s+the\s+([\w' -]+?)\b[^.]*\bis inside\b/i,
+];
 // Notes that describe a quest or give no lead at all. Worth telling the player
 // apart from "we could not read this", because the answer is different.
 const QUEST = [/^a\/?q\b/i, /\barea quest\b/i, /\bquest\b[^.]*\bobtain\b/i];
@@ -80,6 +91,15 @@ export function parseKeySource(rawNote){
   const note = cleanNote(rawNote);
   if(!note) return {kind: 'none', note: ''};
   for(const re of QUEST) if(re.test(note)) return {kind: 'quest', note};
+  // Container before mob: "The key is inside a large mahogany desk" must not be
+  // read as a mob called "a large mahogany desk".
+  for(const re of CONTAINER){
+    const m = note.match(re);
+    if(m){
+      const box = String(m[1] || '').trim().replace(/[.,;:]+$/, '');
+      if(box.length > 2 && box.length < 50) return {kind: 'container', note, container: box};
+    }
+  }
   for(const re of BUY){
     const m = note.match(re);
     if(m) return {kind: 'buy', note, who: (m[1] || '').trim(), price: m[2] || null};

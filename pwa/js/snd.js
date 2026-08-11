@@ -186,8 +186,84 @@ function keyKeyword(keyName){
  * located and walked to, and then it stops and says so, because killing it is a
  * decision rather than a step.
  */
+/** 'a large mahogany desk' -> 'desk'; the game targets on one keyword. */
+function lastWord(s){
+  const w = String(s||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+  return w.length ? w[w.length-1] : '';
+}
+
+// A key taken from a container, watched so success is confirmed rather than
+// assumed. The old buy path announced "bought a skeleton key" without checking,
+// walked back, and hit the same locked door -- the key was never for sale, it was
+// in a desk.
+const KEY_GOT_IT   = /^you get |^you take /im;
+const KEY_ABSENT   = /^you (?:do not|don'?t) see|^that (?:is|s) not here|isn'?t here|^you cannot find/im;
+
+/** Feed MUD output here while a key is being fetched. */
+export function parseKeyFetchOutput(text){
+  const st = sndState.pendingKeyFetch;
+  if(!st) return;
+  if(Date.now() - st.ts > 12000){ sndState.pendingKeyFetch = null; return; }
+  const clean = stripAnsi(text);
+  if(KEY_GOT_IT.test(clean)){
+    sndState.pendingKeyFetch = null;
+    appendOutput('[S&D] got '+(st.keyName||'the key')+'; going back for the door.\n','quest');
+    try {
+      sqlDb.run('UPDATE exits SET level=0 WHERE from_uid=? AND dir=? AND level=999',
+        [st.gate.fromUid, st.gate.dir]);
+    } catch(e){ console.error(e); }
+    clearGateInfo();
+    if(st.resume) st.resume();
+    return;
+  }
+  if(KEY_ABSENT.test(clean)){
+    sndState.pendingKeyFetch = null;
+    appendOutput('[S&D] "'+st.what+'" is not here, so I cannot get '
+      + (st.keyName||'the key')+'. '+(st.note||'')+'\n','error');
+    return;
+  }
+}
+
+/**
+ * Open the container the note names and take the key out of it.
+ *
+ * 58 of the 882 notes are this shape -- "The key is inside a large mahogany desk."
+ * -- and 46 of them were previously misread as a mob's name.
+ */
+function fetchKeyFromContainer(t, gate, resume){
+  const src = gate.source;
+  if(!gate.keyRoom) return false;
+  const tag = gate.fromUid + '|' + gate.dir;
+  if(boughtKeys.has(tag)) return false;
+  const room = resolveRoomByNameAnywhere(gate.keyRoom, t && t.areaName);
+  if(!room || !room.uid) return false;
+  boughtKeys.add(tag);
+  const box = lastWord(src.container);
+  const keyKw = keyKeyword(gate.keyName);
+  appendOutput('[S&D] '+(gate.keyName||'the key')+' is in "'+src.container+'" ('+gate.keyRoom
+    + '); going to get it.\n','quest');
+  gotoRoomUid(room.uid, ()=>{
+    sndState.pendingKeyFetch = {t, gate, resume, keyName: gate.keyName,
+                               what: src.container, note: src.note, ts: Date.now()};
+    sendCmdRaw('open ' + box);
+    setTimeout(()=>sendCmdRaw('get ' + keyKw + ' ' + box), 800);
+    // If neither a success nor a failure line arrives, say so rather than hanging.
+    setTimeout(()=>{
+      if(sndState.pendingKeyFetch && sndState.pendingKeyFetch.ts === undefined) return;
+      if(!sndState.pendingKeyFetch) return;
+      sndState.pendingKeyFetch = null;
+      appendOutput('[S&D] no reply to "get '+keyKw+' '+box+'"; take '
+        + (gate.keyName||'the key')+' yourself, then /xcp again.\n','error');
+    }, 9000);
+  }, {noAreaHop:true});
+  return true;
+}
+
 function tryGetKeyThen(t, gate, resume){
   const src = gate && gate.source;
+  if(src && src.kind === 'container'){
+    if(fetchKeyFromContainer(t, gate, resume)) return true;
+  }
   if(src && src.kind === 'mob'){
     const tag = gate.fromUid + '|' + gate.dir;
     if(boughtKeys.has(tag)) return false;
@@ -224,18 +300,20 @@ function tryBuyKeyThen(t, gate, resume){
     + (price ? ' ('+price+' gold)' : '') + '...\n','quest');
 
   gotoRoomUid(shop.uid, ()=>{
+    // Confirm rather than assert. This used to announce "bought <key>; resuming"
+    // whatever the shop said, walk back, and hit the same locked door -- which is
+    // how the Aardington skeleton key looked like a working feature for so long:
+    // it is not for sale at all, it is inside a desk. parseKeyFetchOutput now
+    // resumes only on a line that says the key actually changed hands.
+    sndState.pendingKeyFetch = {t, gate, resume, keyName: gate.keyName,
+                                what: gate.keyName, note: gate.keyDesc, ts: Date.now()};
     sendCmdRaw('buy ' + kw);
-    // Give the shop a moment to answer, then go back and take the gate again.
     setTimeout(()=>{
-      appendOutput('[S&D] bought '+gate.keyName+'; resuming\n','quest');
-      // The exit was parked at 999 when it refused us; it is usable now.
-      try {
-        sqlDb.run('UPDATE exits SET level=0 WHERE from_uid=? AND dir=? AND level=999',
-          [gate.fromUid, gate.dir]);
-      } catch(e){ console.error(e); }
-      clearGateInfo();
-      resume();
-    }, 1500);
+      if(!sndState.pendingKeyFetch) return;      // already resumed
+      sndState.pendingKeyFetch = null;
+      appendOutput('[S&D] "buy '+kw+'" did not produce '+(gate.keyName||'the key')+'.'
+        + (gate.keyDesc ? ' Note: '+gate.keyDesc : '') + '\n','error');
+    }, 6000);
   }, {noAreaHop:true});
   return true;
 }
