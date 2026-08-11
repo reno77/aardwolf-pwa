@@ -171,7 +171,11 @@ export function processGMCP(key, data){
       } catch(e) {}
     }
     // Update UI
-    currentRoom={name, area, info, exits: Object.keys(exits), uid: uid};
+    // `coord` rides along so the coordinate walker can steer without a query on
+    // every step. Absent in areas the game gives no coordinates for.
+    currentRoom={name, area, info, exits: Object.keys(exits), uid: uid,
+                 coord: (co && Number.isFinite(Number(co.x)) && Number.isFinite(Number(co.y)))
+                   ? {x: Number(co.x), y: Number(co.y), id: Number(co.id) || 0} : null};
     document.getElementById('room-name').textContent=(name||'Unknown') + (area?' ['+area+']':'');
     document.getElementById('room-area').textContent='';
     // Confirm/advance an in-flight walk. room.info is pushed on every room

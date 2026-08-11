@@ -206,6 +206,8 @@ const NOTE_LINE = /^Note:\s*(.+?)\s*$/im;
 // "Look for the Andromeda Galaxy in Vidblain. Coords 14,23."
 const NOTE_AREA = /\bin\s+([A-Z][\w' -]*?)\s*[.,]/;
 const NOTE_COORDS = /\bcoords?\s*(-?\d+)\s*,\s*(-?\d+)/i;
+// The thing to enter once you are standing on the coordinate.
+const NOTE_LANDMARK = /\b(?:look for|find|enter)\s+(?:the\s+)?([\w' -]+?)\s+(?:in|at)\b/i;
 
 /** Pull the routing hint out of a refused `runto`. Returns null if there is none. */
 export function parseRuntoNote(text){
@@ -214,8 +216,23 @@ export function parseRuntoNote(text){
   const note = m[1];
   const area = (note.match(NOTE_AREA) || [])[1] || null;
   const c = note.match(NOTE_COORDS);
-  return {note, area, x: c ? parseInt(c[1]) : null, y: c ? parseInt(c[2]) : null};
+  const landmark = (note.match(NOTE_LANDMARK) || [])[1] || null;
+  return {note, area, landmark,
+          x: c ? parseInt(c[1]) : null, y: c ? parseInt(c[2]) : null};
 }
+
+/**
+ * The word to type at a landmark.
+ *
+ * "the Andromeda Galaxy" -> "galaxy". Aardwolf targets on keywords, and the last
+ * significant word is the noun in every note seen so far.
+ */
+export function landmarkKeyword(landmark){
+  const words = String(landmark || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+  const sig = words.filter(w => !AREA_STOPWORDS_NOTE.has(w));
+  return sig.length ? sig[sig.length - 1] : '';
+}
+const AREA_STOPWORDS_NOTE = new Set(['the', 'a', 'an', 'of']);
 
 /**
  * Remember how to reach an area `runto` will not take us to.
@@ -228,11 +245,13 @@ export function rememberEntryHint(areaName, hint){
   const n = stripAnsi(String(areaName)).trim().toLowerCase();
   try {
     sqlDb.run(
-      `INSERT INTO areas(name, key, norunto, entry_note, entry_area, entry_x, entry_y)
-         VALUES (?,?,1,?,?,?,?)
+      `INSERT INTO areas(name, key, norunto, entry_note, entry_area, entry_x, entry_y, entry_landmark)
+         VALUES (?,?,1,?,?,?,?,?)
        ON CONFLICT(name) DO UPDATE SET norunto=1, entry_note=excluded.entry_note,
-         entry_area=excluded.entry_area, entry_x=excluded.entry_x, entry_y=excluded.entry_y`,
-      [n, areaRuntoKeyword(areaName) || n, hint.note, hint.area, hint.x, hint.y]);
+         entry_area=excluded.entry_area, entry_x=excluded.entry_x, entry_y=excluded.entry_y,
+         entry_landmark=excluded.entry_landmark`,
+      [n, areaRuntoKeyword(areaName) || n, hint.note, hint.area, hint.x, hint.y,
+       hint.landmark || null]);
     return true;
   } catch(e){ console.error('rememberEntryHint error', e); return false; }
 }
@@ -243,11 +262,12 @@ export function entryHint(areaName){
   const n = stripAnsi(String(areaName)).trim().toLowerCase();
   try {
     const r = sqlDb.exec(
-      'SELECT entry_note, entry_area, entry_x, entry_y, norunto FROM areas WHERE name=? OR key=? LIMIT 1',
-      [n, n]);
+      'SELECT entry_note, entry_area, entry_x, entry_y, norunto, entry_landmark'
+      + ' FROM areas WHERE name=? OR key=? LIMIT 1', [n, n]);
     if(!r.length || !r[0].values.length) return null;
-    const [note, area, x, y, norunto] = r[0].values[0];
+    const [note, area, x, y, norunto, landmark] = r[0].values[0];
     if(!note && !norunto) return null;
-    return {note: note || null, area: area || null, x, y, norunto: !!norunto};
+    return {note: note || null, area: area || null, x, y,
+            norunto: !!norunto, landmark: landmark || null};
   } catch(e){ return null; }
 }

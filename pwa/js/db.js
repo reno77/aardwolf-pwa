@@ -86,7 +86,8 @@ const SCHEMA_SQL = `
     -- What the game said when it refused, e.g. "Look for the Andromeda Galaxy in
     -- Vidblain. Coords 14,23." For areas reached only via a landmark elsewhere,
     -- this is the only routing information that exists.
-    entry_note TEXT, entry_area TEXT, entry_x INTEGER, entry_y INTEGER);
+    entry_note TEXT, entry_area TEXT, entry_x INTEGER, entry_y INTEGER,
+    entry_landmark TEXT);
   CREATE INDEX IF NOT EXISTS idx_areas_key ON areas(key);
   CREATE TABLE IF NOT EXISTS mobs(
     mob TEXT NOT NULL, area TEXT NOT NULL, room TEXT, room_uid TEXT,
@@ -182,7 +183,7 @@ export async function initDb() {
   try { sqlDb.run('ALTER TABLE exits ADD COLUMN random INTEGER DEFAULT 0'); addedRandomCol = true; }
   catch(e){ /* already there */ }
   for(const col of ['norunto INTEGER DEFAULT 0', 'entry_note TEXT', 'entry_area TEXT',
-                    'entry_x INTEGER', 'entry_y INTEGER']){
+                    'entry_x INTEGER', 'entry_y INTEGER', 'entry_landmark TEXT']){
     try { sqlDb.run('ALTER TABLE areas ADD COLUMN ' + col); } catch(e){ /* already there */ }
   }
   // Aardwolf's own coordinates, straight off room.info. Distinct from rooms.x/y,

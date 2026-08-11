@@ -177,7 +177,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-1.8';
+export const NAV_BUILD = 'nav-1.9';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -400,6 +400,7 @@ function step(){
 
 /** Called from gmcp.js on every room.info. */
 export function onRoomChanged(){
+  if(coordWalk){ coordOnRoomChanged(); return; }
   if(!walk) return;
   clearStepTimer();
   walk.stalls = 0;          // we moved, so the link is alive
@@ -554,6 +555,175 @@ export function onMudText(text){
 onCharStateChange((st) => {
   if(walk && st === STATE_READY && !walk.expectUid) step();
 });
+
+// =============================================================================
+// COORDINATE WALKING
+// =============================================================================
+//
+// Aardwolf answers a refused `runto` with a coordinate -- "Look for the Andromeda
+// Galaxy in Vidblain. Coords 14,23." -- and on a continent every room carries its
+// own `room.info.coord`, so that is a destination we can steer to without any map
+// of the place at all. Which is the point: these are the areas the map does not
+// cover.
+//
+// The one thing not known in advance is which way the axes run. Rather than
+// assume n is -y (the usual convention, but an assumption that would walk the
+// wrong way for a whole continent before anyone noticed), the walker LEARNS it:
+// it takes a step, sees which way the coordinate moved, and records that. Wrong
+// guesses cost one move and are never repeated.
+
+const AXIS_DEFAULT = {n: [0, -1], s: [0, 1], e: [1, 0], w: [-1, 0]};
+// Learning one direction has to move its opposite with it. Recording only that
+// `n` moves +y leaves `s` still claiming +y and NOTHING claiming -y, so the
+// walker can no longer express "go the other way" and strands itself the moment
+// it overshoots -- which a simulated continent with an inverted y axis did on the
+// first try. The compass is opposed by construction, so one observation settles
+// both ends of the axis.
+const OPPOSITE = {n: 's', s: 'n', e: 'w', w: 'e'};
+const AXIS_KEY = 'coord_axes';
+const COORD_MAX_STEPS = 400;
+
+function loadAxes(){
+  try {
+    const r = sqlDb.exec("SELECT v FROM meta WHERE k=?", [AXIS_KEY]);
+    if(r.length && r[0].values.length) return JSON.parse(r[0].values[0][0]);
+  } catch(e){ /* fall through to the default */ }
+  return {...AXIS_DEFAULT};
+}
+
+function saveAxes(axes){
+  try { sqlDb.run("INSERT OR REPLACE INTO meta(k,v) VALUES (?,?)", [AXIS_KEY, JSON.stringify(axes)]); }
+  catch(e){ /* the default still works, just unlearned next session */ }
+}
+
+let coordWalk = null;   // {tx, ty, axes, steps, tried, lastDir, lastCoord, onDone, onFail}
+
+export function isCoordWalking(){ return !!coordWalk; }
+
+export function cancelCoordWalk(reason){
+  const w = coordWalk;
+  coordWalk = null;
+  if(w && w.onFail) w.onFail(reason || 'cancelled');
+}
+
+/**
+ * Walk to an absolute game coordinate, steering by `room.info.coord`.
+ *
+ * Greedy: close the larger axis gap first, and if a direction is refused try the
+ * other axis before giving up -- which is what gets round the water and mountains
+ * a continent is full of. Bounded by COORD_MAX_STEPS.
+ */
+export function walkToCoords(tx, ty, onDone, onFail){
+  if(!currentRoom.coord){
+    appendOutput('[nav] this area has no coordinates, so there is nothing to steer by\n','error');
+    if(onFail) onFail('no coordinates here');
+    return false;
+  }
+  coordWalk = {tx: Number(tx), ty: Number(ty), axes: loadAxes(), steps: 0,
+               tried: [], lastDir: null, lastCoord: null, onDone, onFail};
+  appendOutput('[nav] steering from ' + currentRoom.coord.x + ',' + currentRoom.coord.y
+    + ' to ' + tx + ',' + ty + '\n','system');
+  coordStep();
+  return true;
+}
+
+/** The direction that reduces this axis gap, given what we have learned. */
+function dirFor(axes, dx, dy, exclude){
+  const want = [];
+  // Close the bigger gap first: fewer direction changes, and on a continent the
+  // long leg is usually the one with open ground.
+  const order = Math.abs(dx) >= Math.abs(dy) ? [['x', dx], ['y', dy]] : [['y', dy], ['x', dx]];
+  for(const [axis, delta] of order){
+    if(!delta) continue;
+    for(const [dir, [ax, ay]] of Object.entries(axes)){
+      const moves = axis === 'x' ? ax : ay;
+      if(moves && Math.sign(moves) === Math.sign(delta)) want.push(dir);
+    }
+  }
+  return want.find(d => !exclude.includes(d)) || null;
+}
+
+function coordFinish(ok, reason){
+  const w = coordWalk;
+  coordWalk = null;
+  if(!w) return;
+  if(ok){ if(w.onDone) w.onDone(); }
+  else {
+    appendOutput('[nav] ' + reason + '\n','error');
+    if(w.onFail) w.onFail(reason);
+  }
+}
+
+function coordStep(){
+  const w = coordWalk;
+  if(!w) return;
+  const here = currentRoom.coord;
+  if(!here){ coordFinish(false, 'lost coordinates part way'); return; }
+  const dx = w.tx - here.x, dy = w.ty - here.y;
+  if(!dx && !dy){
+    appendOutput('[nav] arrived at ' + w.tx + ',' + w.ty + '\n','system');
+    coordFinish(true);
+    return;
+  }
+  if(++w.steps > COORD_MAX_STEPS){
+    coordFinish(false, 'still ' + Math.abs(dx) + ',' + Math.abs(dy) + ' away after '
+      + COORD_MAX_STEPS + ' moves; stopping');
+    return;
+  }
+  // Fighting is a pause, not a failure -- same rule as the room walker.
+  if(charState === STATE_FIGHTING || charState === STATE_RUNNING){
+    setTimeout(coordStep, 1500);
+    return;
+  }
+  if(charState === STATE_SLEEPING || charState === STATE_RESTING){
+    sendCmdRaw('stand');
+    setTimeout(coordStep, 1000);
+    return;
+  }
+  const dir = dirFor(w.axes, dx, dy, w.tried);
+  if(!dir){
+    coordFinish(false, 'blocked: no way to close ' + dx + ',' + dy + ' from here');
+    return;
+  }
+  w.lastDir = dir;
+  w.lastCoord = {x: here.x, y: here.y};
+  queueMove(dir, {fromWalker: true});
+}
+
+/**
+ * Called from onRoomChanged. Confirms the step and learns the axis if the
+ * coordinate moved in a direction we did not predict.
+ */
+function coordOnRoomChanged(){
+  const w = coordWalk;
+  if(!w || !w.lastDir || !w.lastCoord) { coordStep(); return; }
+  const here = currentRoom.coord;
+  if(!here){ coordFinish(false, 'left the coordinate area'); return; }
+  const moved = {x: here.x - w.lastCoord.x, y: here.y - w.lastCoord.y};
+  if(!moved.x && !moved.y){
+    // Same coordinate: the move was refused, or it led somewhere off-grid. Rule
+    // the direction out for this leg and try another.
+    w.tried.push(w.lastDir);
+    coordStep();
+    return;
+  }
+  const expected = w.axes[w.lastDir];
+  if(!expected || expected[0] !== moved.x || expected[1] !== moved.y){
+    // Only trust a clean single-axis step as evidence; diagonal or multi-square
+    // jumps are portals and teleports, not a lesson about the compass.
+    if(Math.abs(moved.x) + Math.abs(moved.y) === 1){
+      w.axes[w.lastDir] = [moved.x, moved.y];
+      const back = OPPOSITE[w.lastDir];
+      if(back) w.axes[back] = [-moved.x, -moved.y];
+      saveAxes(w.axes);
+      appendOutput('[nav] learned: ' + w.lastDir + ' moves '
+        + (moved.x ? (moved.x > 0 ? '+x' : '-x') : (moved.y > 0 ? '+y' : '-y'))
+        + (back ? ' (so ' + back + ' is the other way)' : '') + '\n','system');
+    }
+  }
+  w.tried = [];          // progress made; every direction is worth trying again
+  coordStep();
+}
 
 // =============================================================================
 // DIAGNOSTICS

@@ -3,7 +3,7 @@
 import { exportDb, importDb } from './db.js';
 import { processGMCP } from './gmcp.js';
 import { showFullMap } from './map.js';
-import { doNavTo, doRunto, navDiag, onMudText } from './nav.js';
+import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
          parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, huntTo, stopAutoHunt,
          setXcpMode, sndState, xcpByIndex, xcpNext } from './snd.js';
@@ -215,6 +215,12 @@ export function submitCmd(){
     if(cmd==='areas'){ harvestAreaKeywords(); return; }
     if(cmd==='navdiag'){ navDiag(parts.slice(1).join(' ').trim()); return; }
     if(cmd==='navto'){ doNavTo(parts[1]); return; }
+    if(cmd==='navcoord'){
+      const m=parts.slice(1).join(' ').match(/(-?\d+)\s*[, ]\s*(-?\d+)/);
+      if(!m){ appendOutput('Usage: /navcoord <x>,<y>\n','system'); return; }
+      walkToCoords(parseInt(m[1]), parseInt(m[2]));
+      return;
+    }
     if(cmd==='lag'){ measureLag(parseInt(parts[1])||5); return; }
     if(cmd==='ah'){ huntTo(parts.slice(1).join(' ')); return; }
     if(cmd==='goto'){ doRunto(parts.slice(1).join(' ')); return; }

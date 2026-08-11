@@ -3,9 +3,10 @@
 import { canonicalArea, findAreaAnywhere, gaardianDb, resolveRoomByNameAnywhere, sqlDb } from './db.js';
 import { currentRoom, charState, charLevel, STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
-import { findPath, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo } from './nav.js';
+import { findPath, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo,
+         walkToCoords } from './nav.js';
 import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
-         parseRuntoNote, rememberEntryHint, entryHint } from './areas.js';
+         parseRuntoNote, rememberEntryHint, entryHint, landmarkKeyword } from './areas.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 // --- state owned by this module ---
 export let campaignTargets=[]; // S&D target list, built from cp info + cp check
@@ -610,6 +611,61 @@ export function xcpAbandonTarget(t, reason){
   }
 }
 
+/**
+ * Do what the game just told us to do.
+ *
+ *   You cannot run to The DarkLight.
+ *   Note: Look for the Andromeda Galaxy in Vidblain. Coords 14,23.
+ *
+ * runto the area the note names, steer to the coordinate (see walkToCoords --
+ * on a continent every room reports its own, so this needs no map of the place,
+ * which is the point: these are the areas the map does not cover), then try the
+ * landmark. Each stage reports and stops rather than falling through, because a
+ * wrong turn on a continent is a long walk.
+ *
+ * Returns false if the note is not actionable, so the caller can abandon.
+ */
+export function followEntryHint(t, hint){
+  if(!hint || !hint.area || hint.x == null) return false;
+  const bridge = lookupArea(hint.area);
+  if(!bridge || bridge.nogo){
+    appendOutput('[S&D] no runto keyword for '+hint.area+'; get there yourself, then /xcp '
+      + t.index + '.\n','error');
+    return false;
+  }
+  appendOutput('[S&D] following the note: runto '+bridge.key+', then steering to '
+    + hint.x + ',' + hint.y + '\n','quest');
+  xcpRecall(t, ()=>{
+    sendCmd(RUNTO + bridge.key);
+    awaitAreaThen(hint.area, ()=>{
+      walkToCoords(hint.x, hint.y, ()=>{
+        // Standing on the coordinate. The landmark is the way in.
+        const kw = landmarkKeyword(hint.landmark);
+        if(!kw){
+          appendOutput('[S&D] at '+hint.x+','+hint.y+'. '+(hint.note||'')
+            + ' -- enter it, then /xcp '+t.index+'.\n','quest');
+          return;
+        }
+        appendOutput('[S&D] at '+hint.x+','+hint.y+'; trying "enter '+kw+'"\n','quest');
+        sendCmd('enter '+kw);
+        // Give the move a moment, then let xcpStep decide: if we are now inside
+        // the target area it carries on, and if not it says so.
+        setTimeout(()=>{
+          if(sndState.pendingXcp!==t && sndState.pendingXcp!=null) return;
+          sndState.pendingXcp = t;
+          t.recallSent = false;
+          xcpStep(t);
+        }, 2500);
+      }, (reason)=>{
+        appendOutput('[S&D] could not reach '+hint.x+','+hint.y+' ('+reason
+          + '). '+(hint.note||'')+'\n','error');
+        xcpAbandonTarget(t, 'coord walk failed');
+      });
+    });
+  });
+  return true;
+}
+
 /** Watch MUD output for a failed `rt` so we do not wait out the full timeout. */
 export function parseRuntoOutput(text){
   const t=sndState.xcpRuntoTarget;
@@ -629,11 +685,7 @@ export function parseRuntoOutput(text){
   if(hint){
     rememberEntryHint(t.areaName, hint);
     appendOutput('[S&D] the game says how: '+hint.note+'\n','quest');
-    if(hint.area){
-      appendOutput('[S&D] so: get to '+hint.area
-        + (hint.x != null ? ' and find coords '+hint.x+','+hint.y : '')
-        + ', then /xcp '+t.index+' again from there.\n','quest');
-    }
+    if(followEntryHint(t, hint)) return;
   }
   xcpAbandonTarget(t, hint ? 'runto refused (entry hint saved)' : 'runto refused');
 }
