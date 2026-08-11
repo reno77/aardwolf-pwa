@@ -1057,6 +1057,13 @@ export function xcpRunCampaignHunt(t){
 
 const HUNT_UNABLE   = /unable\s+to\s+hunt\s+that\s+target|seem\s+unable\s+to\s+hunt/i;
 const HUNT_IS_HERE  = /\bis here\b/i;
+// A direction is the other "yes, this one is huntable" answer, and it stalled the
+// identify outright: `hunt head` replied "You are confident that Berta passed
+// through here, heading west." That matched none of the patterns, so `awaiting`
+// stayed armed and the machine sat waiting for a reply it had already been given.
+// For identification a direction means the same as "is here" -- huntable, so not
+// the campaign mob -- so it advances to the next copy.
+const HUNT_DIRECTION = /passed through here|you are confident that|\btrail\b.*\b(?:leads|heads|goes)\b|heading (?:north|south|east|west|up|down)|hunting (?:north|south|east|west|up|down)/i;
 const HUNT_NO_SUCH  = /no one (?:in this area |here )?by (?:the |that )?name|could ?n[o']?t find a path|you are not hunting/i;
 const IDENTIFY_MAX  = 12;
 
@@ -1089,18 +1096,30 @@ function startIdentify(t, then){
   if(!t || t.is_dead) return false;
   const kw = actionKw(t) || gmkw(t.mob);
   if(!kw) return false;
-  sndState.pendingIdentify = {t, kw, ord: 1, ts: Date.now(), then, awaiting: true};
+  const st = {t, kw, ord: 1, ts: Date.now(), then, awaiting: true};
+  sndState.pendingIdentify = st;
   appendOutput('[S&D] ' + (then === 'kill' ? 'in the room -- testing' : 'testing')
     + ' which copy of "'+t.mob+'" cannot be hunted...\n','quest');
-  sendCmd('hunt '+kw);
+  identifyProbe(st);          // the same path, so the no-answer guard applies here too
   return true;
 }
 
 function identifyProbe(st){
   const target = st.ord > 1 ? st.ord + '.' + st.kw : st.kw;
   st.ts = Date.now();
-  st.awaiting = true;      // exactly one reply advances the ordinal
+  st.awaiting = true;      // exactly one recognised reply advances the ordinal
   sendCmd('hunt ' + target);
+  // A reply shape nobody anticipated must not hang the whole helper, which is
+  // exactly what the directional answer above did. If nothing recognisable
+  // arrives, give up on identifying and let the caller's fallback run.
+  if(st.timer) clearTimeout(st.timer);
+  st.timer = setTimeout(()=>{
+    if(sndState.pendingIdentify !== st || !st.awaiting) return;
+    sndState.pendingIdentify = null;
+    appendOutput('[S&D] no answer to "hunt '+target+'" that I recognise; not identifying by hunt.\n','quest');
+    if(st.then === 'locate') xcpStep(st.t);
+    else xcpSweepCopies(st.t, Math.max(1, st.ord - 1));
+  }, 6000);
 }
 
 /** Feed MUD output here while an in-room identification is running. */
@@ -1124,6 +1143,7 @@ export function parseIdentifyOutput(text){
   if(HUNT_UNABLE.test(clean)){
     // Refused: this is the campaign mob.
     st.awaiting = false;
+    if(st.timer) clearTimeout(st.timer);
     sndState.pendingIdentify = null;
     appendOutput('[S&D] copy '+st.ord+' cannot be hunted -- that is the campaign mob.\n','quest');
     st.t.huntOrdKw = ordKw;          // the exact copy, for the kill
@@ -1137,7 +1157,7 @@ export function parseIdentifyOutput(text){
     xcpKillTarget(st.t, ordKw);
     return;
   }
-  if(HUNT_IS_HERE.test(clean)){
+  if(HUNT_IS_HERE.test(clean) || HUNT_DIRECTION.test(clean)){
     st.awaiting = false;
     if(st.ord >= IDENTIFY_MAX){
       sndState.pendingIdentify = null;
@@ -1157,6 +1177,7 @@ export function parseIdentifyOutput(text){
   if(HUNT_NO_SUCH.test(clean)){
     // Run past the number of copies hunt can see.
     st.awaiting = false;
+    if(st.timer) clearTimeout(st.timer);
     sndState.pendingIdentify = null;
     // Identifying before travelling is an optimisation, not the only route: if
     // hunt cannot resolve the ordinals from here -- outside the area, or a

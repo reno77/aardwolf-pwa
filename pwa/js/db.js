@@ -1087,6 +1087,124 @@ export function reconnectDanglingExits(){
  * in nav.js, which walks the shortest of them; moving is itself what settles
  * which room this was.
  */
+/**
+ * Which Gaardian room a local uid is, or might be, as [areaid, local_id] pairs.
+ *
+ * Three sources, in descending confidence: a synthetic uid says so outright, an
+ * anchor is a settled identification, and a candidate set is the surviving
+ * hypotheses for a room whose name repeats.
+ */
+function gaardianIdsFor(uid){
+  const s = String(uid || '');
+  const syn = s.match(/^gaardian:(\d+):(\d+)$/);
+  if(syn) return [[parseInt(syn[1]), parseInt(syn[2])]];
+  const out = [];
+  try {
+    const r = sqlDb.exec(
+      'SELECT gaardian_areaid, gaardian_local_id FROM room_gaardian_map WHERE aardwolf_uid=?', [s]);
+    for(const [a, l] of (r[0]?.values || [])) out.push([a, l]);
+  } catch(e){ /* no anchor */ }
+  if(out.length) return out;
+  try {
+    const r = sqlDb.exec('SELECT areaid, local_id FROM room_candidates WHERE uid=?', [s]);
+    for(const [a, l] of (r[0]?.values || [])) out.push([a, l]);
+  } catch(e){ /* no candidates */ }
+  return out;
+}
+
+/**
+ * A route computed in the REFERENCE map rather than the local graph.
+ *
+ * This is the step that kept forcing a human into the loop. When promotion splits
+ * the local graph -- its Gaardian exits move onto the live uid and GMCP wins the
+ * directions it already knew, orphaning the rest -- findPath returns null even
+ * though Gaardian itself connects the two rooms perfectly well. Every "no route"
+ * of that shape was resolved by computing the path against gaardian_maps.db by
+ * hand and typing the directions: `s s s s s e e e e` into The King's Royal Box,
+ * which the walker could not produce and Gaardian could.
+ *
+ * So do that here. Both ends are resolved to Gaardian rooms (anchor, candidate or
+ * synthetic uid), breadth-first inside the area, shortest over every candidate
+ * pairing. Returns [{dir, uid:null}] for the walker to follow blind -- the uids
+ * are deliberately absent, because a reference route says which way to go and
+ * nothing about which live room you will land in.
+ */
+export function gaardianPath(fromUid, toUid, maxDepth){
+  if(!gaardianDb) return null;
+  const froms = gaardianIdsFor(fromUid);
+  const tos = gaardianIdsFor(toUid);
+  if(!froms.length || !tos.length) return null;
+  const depth = maxDepth || 200;
+  let best = null;
+
+  for(const [fArea, fLocal] of froms){
+    for(const [tArea, tLocal] of tos){
+      if(fArea !== tArea) continue;            // one area at a time; runto crosses them
+      if(fLocal === tLocal) return [];
+      // Backwards from the target, so the first time we reach the source we have
+      // the shortest route -- same shape as findPath.
+      const cameFrom = new Map();              // local_id -> {dir, next}
+      let frontier = [tLocal];
+      const seen = new Set(frontier);
+      let found = false;
+      for(let d = 0; d < depth && frontier.length && !found; d++){
+        const next = [];
+        for(const to of frontier){
+          let rows = [];
+          try {
+            // Random exits are usable, just preferred against -- the same policy
+            // findPath applies. Excluding them would make The Goblin Fortress
+            // unroutable all over again: its eight random exits are the ONLY link
+            // between the entrance and the interior.
+            const r = gaardianDb.exec(
+              `SELECT from_room, exit_type, exit_action FROM exits
+                WHERE areaid=? AND to_room=?
+                  AND (target_areaid IS NULL OR target_areaid=0 OR target_areaid=?)
+                ORDER BY COALESCE(random,0) ASC, exit_type ASC`,
+              [fArea, to, fArea]);
+            rows = r[0]?.values || [];
+          } catch(e){ /* no rows */ }
+          for(const [from, type, action] of rows){
+            if(seen.has(from)) continue;
+            const dir = dirForExit(type, action);
+            if(!dir) continue;
+            seen.add(from);
+            cameFrom.set(from, {dir, next: to});
+            next.push(from);
+            if(from === fLocal){ found = true; break; }
+          }
+          if(found) break;
+        }
+        frontier = next;
+      }
+      if(!found) continue;
+      const path = [];
+      let cur = fLocal;
+      while(cur !== tLocal){
+        const step = cameFrom.get(cur);
+        if(!step) break;
+        path.push({dir: step.dir, uid: null, random: false});
+        cur = step.next;
+      }
+      if(cur === tLocal && (best === null || path.length < best.length)) best = path;
+    }
+  }
+  return best;
+}
+
+/** The command for a Gaardian exit row, or null if it is not typeable. */
+function dirForExit(type, action){
+  if(type >= 0 && type <= 5) return GAARDIAN_DIRS[type];
+  const a = cleanExitAction(action);
+  if(!a) return null;
+  if(type === 6) return 'enter ' + a.toLowerCase();
+  if(type === 7){
+    const d = a.toLowerCase();
+    return (UNTYPEABLE.test(d) || IS_PROSE.test(d)) ? null : d;
+  }
+  return null;
+}
+
 export function gaardianCandidateUids(uid){
   if(!sqlDb || !uid) return [];
   try {

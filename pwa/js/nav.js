@@ -18,7 +18,7 @@
 //     so that test was false every time and *every* custom-exit step aborted
 //     with "is not available here". A custom exit is now simply typed.
 
-import { gaardianCandidateUids, reconnectDanglingExits, sqlDb } from './db.js';
+import { gaardianCandidateUids, gaardianPath, reconnectDanglingExits, sqlDb } from './db.js';
 import { parseKeySource } from './keys.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,
@@ -211,7 +211,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-3.5';
+export const NAV_BUILD = 'nav-3.6';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -274,6 +274,21 @@ export function walkTo(targetUid, onDone, onFail, opts){
     // and try once more before reporting failure.
     if(reconnectDanglingExits()) plan = planRoute(currentRoom.uid, targetUid);
   }
+  if(plan.path === null){
+    // Last resort, and the one that removes the human from the loop: compute the
+    // route in the reference map instead of the local graph. Gaardian connects
+    // rooms the local graph has been split apart on, and this is exactly the
+    // calculation that had to be done by hand to reach The King's Royal Box.
+    const ref = gaardianPath(currentRoom.uid, targetUid);
+    if(ref && ref.length){
+      appendOutput('[nav] the local map is split here; following Gaardian\'s own route: '
+        + ref.map(p=>p.dir).join(' ') + '\n','system');
+      plan = {path: ref, viaCandidate: null, choices: 0, fromReference: true};
+    } else if(ref && !ref.length){
+      if(onDone) onDone();
+      return true;
+    }
+  }
   const path = plan.path;
   if(path === null){
     appendOutput('[nav] no route to that room from here'
@@ -307,7 +322,7 @@ export function walkTo(targetUid, onDone, onFail, opts){
           lastFrom:null, lastDir:null, repaths:0, timer:null, onDone, onFail,
           // A route planned from a candidate is a hypothesis about which room we
           // are in, so the uids along it are not predictions to hold the walk to.
-          opened:false, blind: !!plan.viaCandidate,
+          opened:false, blind: !!(plan.viaCandidate || plan.fromReference),
           viaCandidate: plan.viaCandidate, ruledOut: []};
   setWalkCanceller(cancelWalk);
   appendOutput(`[nav] walking ${path.length} step${path.length>1?'s':''}: `
@@ -342,6 +357,12 @@ function step(){
   const replan = planRoute(currentRoom.uid, walk.targetUid, walk.ruledOut);
   walk.viaCandidate = replan.viaCandidate;
   let path = replan.path;
+  let fromReference = false;
+  if(path === null){
+    const ref = gaardianPath(currentRoom.uid, walk.targetUid);
+    if(ref && ref.length){ path = ref; fromReference = true; }
+    else if(ref && !ref.length){ finish(true); return; }
+  }
   if(path === null){
     // Re-pathing fails routinely while crossing an area imported from Gaardian:
     // every step into a skeleton room arrives with a real uid that is not yet in
@@ -360,9 +381,10 @@ function step(){
       return;
     }
   } else {
-    // A route planned from a candidate is still only a hypothesis about which
-    // room this is, so uid mismatches stay expected until the room is anchored.
-    walk.blind = !!replan.viaCandidate;
+    // A route planned from a candidate -- or from the reference map, which knows
+    // directions but no live uids -- is a hypothesis, so uid mismatches stay
+    // expected until the room is anchored.
+    walk.blind = !!(replan.viaCandidate || fromReference);
   }
   // A prerequisite already performed from this room must not be re-planned: the
   // map still says the way through here is `give ... castle guard`, and we have
