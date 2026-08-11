@@ -1142,6 +1142,21 @@ const HUNT_IS_HERE  = /\bis here\b/i;
 // For identification a direction means the same as "is here" -- huntable, so not
 // the campaign mob -- so it advances to the next copy.
 const HUNT_DIRECTION = /passed through here|you are confident that|\btrail\b.*\b(?:leads|heads|goes)\b|heading (?:north|south|east|west|up|down)|hunting (?:north|south|east|west|up|down)/i;
+// Hunt replies NAME the mob, which is the way out of the keyword problem below.
+const HUNT_NAMES = [
+  /^(?:you are confident that\s+)?(.+?)\s+passed through here/im,
+  /^(?:you are confident that\s+)?(.+?)\s+is here\b/im,
+  /^you are (?:now )?hunting\s+(.+?)\s*[.!]/im,
+];
+
+/** The mob a hunt reply is talking about, or null. */
+function huntedName(text){
+  for(const re of HUNT_NAMES){
+    const m = text.match(re);
+    if(m && m[1] && m[1].length < 60) return m[1].trim();
+  }
+  return null;
+}
 const HUNT_NO_SUCH  = /no one (?:in this area |here )?by (?:the |that )?name|could ?n[o']?t find a path|you are not hunting/i;
 const IDENTIFY_MAX  = 12;
 
@@ -1196,7 +1211,7 @@ function identifyProbe(st){
     sndState.pendingIdentify = null;
     appendOutput('[S&D] no answer to "hunt '+target+'" that I recognise; not identifying by hunt.\n','quest');
     if(st.then === 'locate') xcpStep(st.t);
-    else xcpSweepCopies(st.t, Math.max(1, st.ord - 1));
+    else xcpSweepCopies(st.t, Math.max(1, st.ord - 1), st.matches);
   }, 6000);
 }
 
@@ -1237,6 +1252,19 @@ export function parseIdentifyOutput(text){
   }
   if(HUNT_IS_HERE.test(clean) || HUNT_DIRECTION.test(clean)){
     st.awaiting = false;
+    // This copy is huntable -- but is it even the right mob? A keyword is only the
+    // last word of the name, so "a stuffed medusa head" searches on `head`, and
+    // Aardington also holds a stuffed PANTHER head. `kill head` took the panther.
+    // The reply names the mob, so check it: an ordinal naming something else is a
+    // different creature sharing the keyword, not a copy of the target, and must
+    // not be counted or killed.
+    const named = huntedName(clean);
+    st.matches = st.matches || [];
+    if(named && !mobMatches(st.t.mob, named)){
+      appendOutput('[S&D] '+ordKw+' is "'+named+'", not "'+st.t.mob+'" -- skipping it.\n','quest');
+    } else {
+      st.matches.push(st.ord);
+    }
     if(st.ord >= IDENTIFY_MAX){
       sndState.pendingIdentify = null;
       if(st.then === 'locate'){
@@ -1245,7 +1273,7 @@ export function parseIdentifyOutput(text){
         return;
       }
       appendOutput('[S&D] tested '+st.ord+' copies of "'+st.t.mob+'" and every one can be hunted.\n','quest');
-      xcpSweepCopies(st.t, st.ord);
+      xcpSweepCopies(st.t, st.ord, st.matches);
       return;
     }
     st.ord++;
@@ -1276,7 +1304,7 @@ export function parseIdentifyOutput(text){
     }
     appendOutput('[S&D] '+(st.ord-1)+' cop'+(st.ord-1===1?'y':'ies')+' of "'+st.t.mob
       + '" here, and every one can be hunted.\n','quest');
-    xcpSweepCopies(st.t, st.ord-1);
+    xcpSweepCopies(st.t, st.ord-1, st.matches);
     return;
   }
 }
@@ -2167,11 +2195,18 @@ function onArriveAtInstance(t){
  * the first, so the keyword walks the room on its own, and no ordinal goes stale
  * underneath the sweep. Verify after each, stop the moment the campaign clears.
  */
-export function xcpSweepCopies(t, count){
+export function xcpSweepCopies(t, count, ordinals){
   if(!t || t.is_dead) return;
-  t.copiesLeft = Math.max(1, Math.min(count || 1, 15)) + 2;   // a little slack for repops
+  // Only the ordinals whose hunt reply NAMED our mob. A bare keyword would take
+  // whatever is first in the room, which is how "a stuffed medusa head" got a
+  // stuffed panther head killed instead -- both answer to `head`.
+  t.sweepOrds = (ordinals && ordinals.length) ? ordinals.slice() : null;
+  t.copiesLeft = t.sweepOrds ? t.sweepOrds.length
+                             : Math.max(1, Math.min(count || 1, 15)) + 2;
   appendOutput('[S&D] no copy refused the hunt, so this mob is not flagged -- the trick\n'
-    + '       cannot pick it out. Working through the copies one at a time.\n','quest');
+    + '       cannot pick it out. Working through '
+    + (t.sweepOrds ? t.sweepOrds.length + ' confirmed cop' + (t.sweepOrds.length===1?'y':'ies')
+                   : 'the copies') + ' one at a time.\n','quest');
   killNextCopy(t);
 }
 
@@ -2185,9 +2220,14 @@ function killNextCopy(t){
   }
   t.copiesLeft--;
   const kw = actionKw(t) || gmkw(t.mob);
-  // Plain keyword: the first copy in the room, which is a different mob each time
-  // as the previous one dies.
-  xcpKillTarget(t, kw, ()=>{
+  // A confirmed ordinal when we have one; otherwise the plain keyword, which takes
+  // the first copy in the room -- a different mob each time as the previous dies.
+  let targetKw = kw;
+  if(t.sweepOrds && t.sweepOrds.length){
+    const ord = t.sweepOrds.shift();
+    targetKw = ord > 1 ? ord + '.' + kw : kw;
+  }
+  xcpKillTarget(t, targetKw, ()=>{
     appendOutput('[S&D] not that one; '+t.copiesLeft+' more to try.\n','quest');
     setTimeout(()=>killNextCopy(t), 1200);
   });
