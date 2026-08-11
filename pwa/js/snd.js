@@ -2503,7 +2503,14 @@ const REPLY_WINDOW_MS = 3000;
 export function parseNotHereOutput(text){
   const now=Date.now();
   if(sndState.pendingKill && now - sndState.pendingKill.ts > REPLY_WINDOW_MS) sndState.pendingKill=null;
-  if(sndState.pendingTwinProbe && now - sndState.pendingTwinProbe.ts > REPLY_WINDOW_MS) sndState.pendingTwinProbe=null;
+  // A probe that never gets a conclusive answer means absent, not stuck: carry on
+  // to the next twin rather than leaving the sweep waiting forever.
+  if(sndState.pendingTwinProbe && now - sndState.pendingTwinProbe.ts > REPLY_WINDOW_MS){
+    const stale = sndState.pendingTwinProbe;
+    sndState.pendingTwinProbe = null;
+    xcpSweepTwins(stale.t);
+    return;
+  }
   const probe=sndState.pendingTwinProbe;
   const kill=sndState.pendingKill;
   if(!probe && !kill) return;
@@ -2511,11 +2518,27 @@ export function parseNotHereOutput(text){
   const absent=NOT_HERE.some(re=>re.test(clean));
 
   if(probe){
-    // A probe is a `look <kw>`: anything that is not a "not here" is the mob's
-    // description, which means it is standing right there.
-    sndState.pendingTwinProbe=null;
-    if(absent){ xcpSweepTwins(probe.t); }
-    else { xcpKillTarget(probe.t); }
+    // Presence needs POSITIVE evidence. Treating "no absence phrase matched" as a
+    // hit meant any unrecognised reply -- and `look <kw>` in a room without the mob
+    // produces several -- read as "it is standing right there", so the sweep fired
+    // `kill 4.yagnoloth` into empty rooms across the Oinos Gloom of Hades. The mob
+    // is here only if the reply mentions it by name.
+    if(absent){
+      sndState.pendingTwinProbe=null;
+      xcpSweepTwins(probe.t);
+      return;
+    }
+    const named = clean.split(/\r?\n/).some(line => {
+      const l = line.trim();
+      return l && l.length < 120 && mobMatches(probe.t.mob, l);
+    });
+    if(named){
+      sndState.pendingTwinProbe=null;
+      xcpKillTarget(probe.t);
+      return;
+    }
+    // Nothing conclusive yet: leave the probe armed and let the reply window or a
+    // later line settle it, rather than attacking on a guess.
     return;
   }
   if(absent){
