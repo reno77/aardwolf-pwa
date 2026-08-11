@@ -48,6 +48,11 @@ const SCHEMA_SQL = `
     uid TEXT PRIMARY KEY, area TEXT, name TEXT, terrain TEXT, info TEXT,
     x INTEGER, y INTEGER, z INTEGER, exits TEXT,
     noportal INTEGER DEFAULT 0, norecall INTEGER DEFAULT 0,
+    -- Aardwolf's own coordinate frame from room.info.coord, as opposed to x/y/z
+    -- above, which this client derives from the exit graph in order to draw.
+    -- A refused runto answers with a coordinate, so these are what make that
+    -- answer usable. (No backticks in here: SCHEMA_SQL is a template literal.)
+    acoord_x INTEGER, acoord_y INTEGER, acoord_id INTEGER,
     first_seen TEXT, last_visited TEXT);
   CREATE TABLE IF NOT EXISTS exits(
     from_uid TEXT NOT NULL,
@@ -76,7 +81,12 @@ const SCHEMA_SQL = `
     key TEXT,                -- Aardwolf area keyword, as used by 'runto'
     minlvl INTEGER, maxlvl INTEGER,
     lock INTEGER DEFAULT 0,  -- cannot enter below this level
-    nogo INTEGER DEFAULT 0); -- refuse to auto-navigate here
+    nogo INTEGER DEFAULT 0,  -- refuse to auto-navigate here
+    norunto INTEGER DEFAULT 0, -- runto refuses this area; use entry_* instead
+    -- What the game said when it refused, e.g. "Look for the Andromeda Galaxy in
+    -- Vidblain. Coords 14,23." For areas reached only via a landmark elsewhere,
+    -- this is the only routing information that exists.
+    entry_note TEXT, entry_area TEXT, entry_x INTEGER, entry_y INTEGER);
   CREATE INDEX IF NOT EXISTS idx_areas_key ON areas(key);
   CREATE TABLE IF NOT EXISTS mobs(
     mob TEXT NOT NULL, area TEXT NOT NULL, room TEXT, room_uid TEXT,
@@ -171,6 +181,17 @@ export async function initDb() {
   let addedRandomCol = false;
   try { sqlDb.run('ALTER TABLE exits ADD COLUMN random INTEGER DEFAULT 0'); addedRandomCol = true; }
   catch(e){ /* already there */ }
+  for(const col of ['norunto INTEGER DEFAULT 0', 'entry_note TEXT', 'entry_area TEXT',
+                    'entry_x INTEGER', 'entry_y INTEGER']){
+    try { sqlDb.run('ALTER TABLE areas ADD COLUMN ' + col); } catch(e){ /* already there */ }
+  }
+  // Aardwolf's own coordinates, straight off room.info. Distinct from rooms.x/y,
+  // which this client derives from the exit graph for drawing. A refused runto
+  // answers with a coordinate ("Coords 14,23"), so the game's own frame has to be
+  // stored for that hint to be worth anything.
+  for(const col of ['acoord_x INTEGER', 'acoord_y INTEGER', 'acoord_id INTEGER']){
+    try { sqlDb.run('ALTER TABLE rooms ADD COLUMN ' + col); } catch(e){ /* already there */ }
+  }
 
   seedAreas();   // minimal area keyword seed; /areas harvests the real list
   initInventory();

@@ -4,7 +4,8 @@ import { canonicalArea, findAreaAnywhere, gaardianDb, resolveRoomByNameAnywhere,
 import { currentRoom, charState, charLevel, STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
 import { findPath, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo } from './nav.js';
-import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput } from './areas.js';
+import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
+         parseRuntoNote, rememberEntryHint, entryHint } from './areas.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 // --- state owned by this module ---
 export let campaignTargets=[]; // S&D target list, built from cp info + cp check
@@ -616,8 +617,25 @@ export function parseRuntoOutput(text){
   if(!runtoFailed(text)) return;
   sndState.xcpAwaitingArea=null;
   sndState.xcpRuntoTarget=null;
-  appendOutput('[S&D] runto was refused for '+t.areaName+'; skipping this target.\n','error');
-  xcpAbandonTarget(t, 'runto refused');
+  appendOutput('[S&D] runto was refused for '+t.areaName+'.\n','error');
+  // The refusal usually comes with the answer attached:
+  //   You cannot run to The DarkLight.
+  //   Note: Look for the Andromeda Galaxy in Vidblain. Coords 14,23.
+  // Areas reachable only through a landmark in another area are precisely the
+  // ones no canned speedwalk covers, so this note is the only routing
+  // information that exists for them. Keep it rather than throwing it away with
+  // the rest of the reply, and say it out loud.
+  const hint = parseRuntoNote(text);
+  if(hint){
+    rememberEntryHint(t.areaName, hint);
+    appendOutput('[S&D] the game says how: '+hint.note+'\n','quest');
+    if(hint.area){
+      appendOutput('[S&D] so: get to '+hint.area
+        + (hint.x != null ? ' and find coords '+hint.x+','+hint.y : '')
+        + ', then /xcp '+t.index+' again from there.\n','quest');
+    }
+  }
+  xcpAbandonTarget(t, hint ? 'runto refused (entry hint saved)' : 'runto refused');
 }
 
 export function xcpStep(t){
@@ -660,6 +678,20 @@ export function xcpStep(t){
       appendOutput('[S&D] "'+t.areaName+'" cannot be auto-navigated (no route exists). '
         + 'Walk there yourself, then /xcp '+t.index+'.\n','error');
       xcpAbandonTarget(t, 'no-go area');
+      return;
+    }
+    // Already refused once, with the game's own explanation on record. Spending
+    // another recall to be told the same thing is the loop this helper exists to
+    // avoid, so report what we know instead.
+    const known = entryHint(t.areaName);
+    if(known && known.norunto){
+      appendOutput('[S&D] runto cannot reach '+t.areaName+'.\n','error');
+      if(known.note) appendOutput('[S&D] the game says: '+known.note+'\n','quest');
+      appendOutput('[S&D] get there yourself'
+        + (known.area ? ' (via '+known.area
+            + (known.x != null ? ' at '+known.x+','+known.y : '')+')' : '')
+        + ', then /xcp '+t.index+' from inside.\n','quest');
+      xcpAbandonTarget(t, 'runto refused before');
       return;
     }
     if(area.lock && charLevel && charLevel < area.lock){

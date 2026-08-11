@@ -115,6 +115,15 @@ export function processGMCP(key, data){
     if(!existing.length || !existing[0].values[0][0]){
       sqlDb.run("UPDATE rooms SET first_seen=? WHERE uid=?", [now, uid]);
     }
+    // Aardwolf's own coordinates, kept separately from the x/y/z above, which are
+    // derived from the exit graph for drawing. A refused `runto` answers with a
+    // coordinate -- "Look for the Andromeda Galaxy in Vidblain. Coords 14,23." --
+    // and that is only actionable if the game's frame is recorded.
+    const co = data.coord;
+    if(co && Number.isFinite(Number(co.x)) && Number.isFinite(Number(co.y))){
+      sqlDb.run('UPDATE rooms SET acoord_x=?, acoord_y=?, acoord_id=? WHERE uid=?',
+        [Number(co.x), Number(co.y), Number(co.id) || 0, uid]);
+    }
     // Store exits. GMCP only ever publishes n/e/s/w/u/d, so this never
     // overwrites an imported custom exit. It does NOT publish only the exits
     // that are open: a closed door is listed like any other (confirmed at

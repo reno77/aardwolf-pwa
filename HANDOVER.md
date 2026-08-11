@@ -240,8 +240,41 @@ to five characters, which collides for 54 of the 269 mapped areas:
 
 `NO_GO` in `areas.js` lists areas that cannot be auto-navigated at all (mazes,
 clan halls, epic and puzzle areas) — the helper reports and skips instead of
-looping. A failed `rt` is now parsed and abandons the target rather than falling
-through to `where`, which only works *inside* the target area.
+looping. A failed `runto` is now parsed and abandons the target rather than
+falling through to `where`, which only works *inside* the target area.
+
+**Send `runto`, never `rt`.** `rt` is not an abbreviation for it — Aardwolf
+matches `rt` to some other command that wants an inventory item and answers "You
+are not carrying that item.", which is in no failure list, so every area hop
+silently did nothing. Note `help rt` *does* resolve to the Runto page: the help
+system and the command parser do not abbreviate the same way.
+
+### When `runto` refuses, it usually says how to get there
+
+```
+runto darklight
+You cannot run to The DarkLight.
+Note: Look for the Andromeda Galaxy in Vidblain. Coords 14,23.
+```
+
+Two things went wrong with this reply. The failure pattern read
+`/^You cannot runto/` — the game writes **run to**, two words — so the refusal
+matched nothing and the helper waited to arrive somewhere it was never going.
+And the `Note:` line, which is the answer to the exact question being asked, was
+discarded with the rest of the output.
+
+Areas reachable only through a landmark in another area are precisely the ones no
+canned speedwalk covers, so that note is the *only* routing information that
+exists for them. `parseRuntoNote` extracts it, `rememberEntryHint` stores it on
+`areas` (`norunto`, `entry_note`, `entry_area`, `entry_x`, `entry_y`), and
+`entryHint` is consulted **before** the next attempt, so a second `/xcp` reports
+what the game already told us instead of spending another recall to be refused
+again.
+
+`rooms.acoord_x/acoord_y/acoord_id` hold Aardwolf's own coordinates from
+`room.info.coord`, kept separate from `rooms.x/y/z`, which this client derives
+from the exit graph in order to draw. Without the game's own frame, a hint like
+"Coords 14,23" is unusable.
 
 ### Area names: keyword vs display name
 

@@ -171,7 +171,11 @@ const RUNTO_FAIL = [
   /^You are not carrying that item/im,
   /only works from Aylor recall/im,
   /^No such area/im,
-  /^You cannot runto/im,
+  // The game writes "You cannot run to The DarkLight." -- run and to are two
+  // words. The pattern here said `runto`, so the refusal matched nothing,
+  // runtoFailed() returned false, and the helper sat waiting to arrive in an
+  // area it was never going to reach. A single missing space.
+  /^You cannot run ?to/im,
   /^Sorry, you cannot/im,
   /^There is no area/im,
   /^You must be in your recall room/im,
@@ -183,4 +187,67 @@ const RUNTO_FAIL = [
 export function runtoFailed(text){
   const clean = stripAnsi(text);
   return RUNTO_FAIL.some(re => re.test(clean));
+}
+
+// -----------------------------------------------------------------------------
+// Entry hints
+// -----------------------------------------------------------------------------
+// When `runto` refuses, Aardwolf often says how to get there anyway:
+//
+//   You cannot run to The DarkLight.
+//   Note: Look for the Andromeda Galaxy in Vidblain. Coords 14,23.
+//
+// That is the answer to the question the helper was asking, handed over for free,
+// and it was being discarded along with the rest of the reply. Areas reachable
+// only through a landmark in another area are exactly the ones a canned speedwalk
+// cannot express, so this note is the only routing information that exists.
+
+const NOTE_LINE = /^Note:\s*(.+?)\s*$/im;
+// "Look for the Andromeda Galaxy in Vidblain. Coords 14,23."
+const NOTE_AREA = /\bin\s+([A-Z][\w' -]*?)\s*[.,]/;
+const NOTE_COORDS = /\bcoords?\s*(-?\d+)\s*,\s*(-?\d+)/i;
+
+/** Pull the routing hint out of a refused `runto`. Returns null if there is none. */
+export function parseRuntoNote(text){
+  const m = stripAnsi(text).match(NOTE_LINE);
+  if(!m) return null;
+  const note = m[1];
+  const area = (note.match(NOTE_AREA) || [])[1] || null;
+  const c = note.match(NOTE_COORDS);
+  return {note, area, x: c ? parseInt(c[1]) : null, y: c ? parseInt(c[2]) : null};
+}
+
+/**
+ * Remember how to reach an area `runto` will not take us to.
+ *
+ * Also sets `norunto`, so the next attempt does not spend a recall and a refused
+ * command rediscovering the same thing.
+ */
+export function rememberEntryHint(areaName, hint){
+  if(!sqlDb || !areaName || !hint) return false;
+  const n = stripAnsi(String(areaName)).trim().toLowerCase();
+  try {
+    sqlDb.run(
+      `INSERT INTO areas(name, key, norunto, entry_note, entry_area, entry_x, entry_y)
+         VALUES (?,?,1,?,?,?,?)
+       ON CONFLICT(name) DO UPDATE SET norunto=1, entry_note=excluded.entry_note,
+         entry_area=excluded.entry_area, entry_x=excluded.entry_x, entry_y=excluded.entry_y`,
+      [n, areaRuntoKeyword(areaName) || n, hint.note, hint.area, hint.x, hint.y]);
+    return true;
+  } catch(e){ console.error('rememberEntryHint error', e); return false; }
+}
+
+/** What we know about reaching an area the hard way, or null. */
+export function entryHint(areaName){
+  if(!sqlDb || !areaName) return null;
+  const n = stripAnsi(String(areaName)).trim().toLowerCase();
+  try {
+    const r = sqlDb.exec(
+      'SELECT entry_note, entry_area, entry_x, entry_y, norunto FROM areas WHERE name=? OR key=? LIMIT 1',
+      [n, n]);
+    if(!r.length || !r[0].values.length) return null;
+    const [note, area, x, y, norunto] = r[0].values[0];
+    if(!note && !norunto) return null;
+    return {note: note || null, area: area || null, x, y, norunto: !!norunto};
+  } catch(e){ return null; }
 }
