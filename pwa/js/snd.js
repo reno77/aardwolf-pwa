@@ -1352,7 +1352,7 @@ export function parseXcpNavOutput(text){
         return;
       }
       appendOutput('[S&D] hunt indicates '+dirMatch[1].toLowerCase()+', moving...\n','quest');
-      sendCmd(dir);
+      stepFollowing(dir);
       const nav=sndState.xcpNav.navInstance;
       const kw=sndState.xcpNav.kw;
       setTimeout(()=>{
@@ -1747,7 +1747,7 @@ export function parseHuntTrickOutput(text){
       }
       appendOutput('[S&D] instance '+inst.n+' is '+dirMatch[1].toLowerCase()+', moving...\n','quest');
       sndState.pendingHuntTrick=null;
-      sendCmd(dir);
+      stepFollowing(dir);
       setTimeout(()=>xcpContinueHuntTrick(target, inst), 1200);
       return;
     }
@@ -1791,9 +1791,24 @@ export function xcpKillTarget(t){
   // a room with the right NAME but not the right room. See xcpSweepTwins.
   sndState.pendingKill={t, at:currentRoom.uid, ts:Date.now()};
   sendCmd('kill '+kw);
-  setTimeout(()=>xcpVerifyKill(t, ()=>{
-    appendOutput('[S&D] '+t.mob+' still alive; finish the fight and /xcp to continue.\n','quest');
-  }), 5000);
+  // `cp check` on a flat 5s timer lands in the middle of the fight, so it read the
+  // target as still alive every single time -- "finish the fight and /xcp to
+  // continue" printed immediately before the mob died. Wait for combat to end
+  // instead, with a cap so a fight we are losing does not hang the helper.
+  let waited = 0;
+  const whenDone = () => {
+    if(charState === STATE_FIGHTING && waited < 90000){
+      waited += 1500;
+      setTimeout(whenDone, 1500);
+      return;
+    }
+    xcpVerifyKill(t, ()=>{
+      appendOutput('[S&D] '+t.mob+' is still alive'
+        + (charState === STATE_FIGHTING ? ' and the fight is still going' : '')
+        + '; /xcp '+t.index+' to try again.\n','quest');
+    });
+  };
+  setTimeout(whenDone, 2500);
 }
 
 // =============================================================================
@@ -1817,6 +1832,53 @@ const NOT_HERE = [
   /you can'?t find any.*here/i,
   /no such creature/i,
 ];
+
+// =============================================================================
+// FOLLOWING A HUNT TRAIL
+// =============================================================================
+//
+// Following `hunt` is a SECOND movement path, separate from nav.js's walker, and
+// it had no door handling at all: it sent the direction, the door was shut, the
+// character did not move, `hunt` said the same direction again, and it looped
+// until "trail too long". Five wasted rounds and the target abandoned, with the
+// mob two rooms away.
+//
+// This went unnoticed because the fado_t51 trigger -- blindly opening all six
+// directions on any "is closed" line -- happened to open the door. Turning that
+// off (it fights the walker) exposed the gap it was covering.
+
+// Anchored to the end of the line on purpose. Without that, "The shop is closed
+// for the night, come back later." reads as a shut door and the follower fires a
+// pointless `open` -- caught by the test before it ever ran.
+const DOOR_SHUT = [
+  /^the \w+ is closed\.?\s*$/im,      // "The door is closed." / "The doubledoor is closed."
+  /\bis closed\.\s*$/im,              // "A large iron portcullis is closed."
+];
+
+/** One step along a hunt trail, with the door opened if the game says it is shut. */
+function stepFollowing(dir){
+  sndState.pendingFollowMove = {dir, ts: Date.now(), opened: false};
+  sendCmd(dir);
+}
+
+/**
+ * Feed MUD output here. Opens a shut door the hunt-follower just walked into and
+ * repeats the step, once. The walker has its own version of this; it only runs
+ * while a path walk is active, which a hunt trail is not.
+ */
+export function parseFollowMoveOutput(text){
+  const m = sndState.pendingFollowMove;
+  if(!m) return;
+  // The reply is immediate; anything later belongs to somebody else's command.
+  if(Date.now() - m.ts > 4000){ sndState.pendingFollowMove = null; return; }
+  const clean = stripAnsi(text);
+  if(!DOOR_SHUT.some(re => re.test(clean))) return;
+  if(m.opened){ sndState.pendingFollowMove = null; return; }   // one attempt is enough
+  m.opened = true;
+  appendOutput('[S&D] '+m.dir+' is closed; opening it\n','quest');
+  sendCmdRaw('open '+m.dir);
+  setTimeout(()=>{ if(sndState.pendingFollowMove===m) sendCmd(m.dir); }, 500);
+}
 
 // The reply to `kill` or `look` is immediate, so anything later is somebody
 // else's "They aren't here" -- usually the player typing their own command --

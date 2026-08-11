@@ -5,7 +5,8 @@ import { processGMCP } from './gmcp.js';
 import { showFullMap } from './map.js';
 import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
-         parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, huntTo, stopAutoHunt,
+         parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, parseFollowMoveOutput,
+         huntTo, stopAutoHunt,
          setXcpMode, sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
@@ -380,6 +381,7 @@ export function handleMessage(msg){
       parseRuntoOutput(msg.text);      // notice a refused `rt`
       parseAutoHuntOutput(msg.text);   // server-driven maze navigation
       parseNotHereOutput(msg.text);    // right room name, wrong room: sweep the twins
+      parseFollowMoveOutput(msg.text); // a shut door on a hunt trail
       processTriggers(msg.text); parseWhereOutput(msg.text); parseHuntOutput(msg.text); checkQuest(msg.text);
       break;
     case 'echo': appendOutput(msg.text,'echo'); break;

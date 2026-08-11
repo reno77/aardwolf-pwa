@@ -211,7 +211,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-2.2';
+export const NAV_BUILD = 'nav-2.3';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -481,7 +481,9 @@ const BLOCKED = [
   // the only route to the target. Say nothing and let the pending step try the
   // direction; if that fails, "cannot go that way" removes it properly.
   {re:/^There is no door\b.*\bhere\b/im,            msg:null, ignore:true},
-  {re:/^The door is closed/im,                      msg:null, open:true},
+  // Any name for the door: "The door is closed.", "The wooden gate is closed.",
+  // "The doubledoor is closed." Aardwolf names them after the area's furniture.
+  {re:/^the \w+(?:\s+\w+)? is closed\.?\s*$/im,     msg:null, open:true},
   {re:/is closed\.$/im,                             msg:null, open:true},
   {re:/^The door is locked/im,                      msg:'the door is locked', locked:true},
   {re:/^You do not have a key for/im,               msg:'no key for that door', locked:true},
@@ -504,11 +506,23 @@ const BLOCKED = [
   {re:/^You cannot (recall|return home) from this room/im, msg:'cannot recall here', norecall:true},
 ];
 
+// A shut door, in whatever the area calls it. Checked before anything is deleted
+// from the map, because both messages can arrive in one chunk: walking west into
+// a shut gate produced "The wooden gate is closed." AND a cannot-go-that-way, and
+// whichever pattern happened to be earlier in BLOCKED won. deadEnd won, so the
+// walker deleted a perfectly good edge, lost the route, and abandoned the target
+// -- in Diamond Soul Revelation, one gate short of the arboretum.
+const SOMETHING_SHUT = /\b(?:is|are) closed\b|^the \w+ is closed/im;
+
 /** Called from net.js for every line of MUD output while a walk is active. */
 export function onMudText(text){
   if(!walk || !text) return;
+  const shut = SOMETHING_SHUT.test(text);
   for(const b of BLOCKED){
     if(!b.re.test(text)) continue;
+    // Never treat a shut door as a missing exit. The exit is there; it is closed,
+    // and deleting it throws away map data to solve a problem `open` solves.
+    if(b.deadEnd && shut) continue;
     if(b.noportal && currentRoom.uid){
       try { sqlDb.run('UPDATE rooms SET noportal=1 WHERE uid=?', [currentRoom.uid]); } catch(e){}
     }
