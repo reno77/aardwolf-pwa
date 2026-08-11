@@ -211,7 +211,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-2.8';
+export const NAV_BUILD = 'nav-2.9';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -537,7 +537,19 @@ const BLOCKED = [
   {re:/\byou are not allowed\b/im,                  msg:'not allowed through there',        gated:true},
   {re:/\byou cannot enter\b/im,                     msg:'you cannot enter there',           gated:true},
   {re:/^You cannot (recall|return home) from this room/im, msg:'cannot recall here', norecall:true},
+  // The reply to a prerequisite we cannot perform: `give 'identification pass'
+  // 'castle guard'` when the pass is not in inventory. Treated as a plain move
+  // failure this looked like success -- the give "moved us nowhere", so the walk
+  // carried on to the `n` beyond the guard, failed it five times and deleted the
+  // edge on each attempt. It is a hard stop with a nameable cause instead.
+  {re:/^You (?:don'?t|do not) have that(?: item)?\.?\s*$/im, msg:null, missingItem:true},
 ];
+
+/** The item a custom exit needs, if its command quotes one. */
+function neededItem(dir){
+  const m = String(dir || '').match(/'([^']+)'/);
+  return m ? m[1] : null;
+}
 
 // A shut door, in whatever the area calls it. Checked before anything is deleted
 // from the map, because both messages can arrive in one chunk: walking west into
@@ -581,6 +593,15 @@ export function onMudText(text){
     // Never treat a shut door as a missing exit. The exit is there; it is closed,
     // and deleting it throws away map data to solve a problem `open` solves.
     if(b.deadEnd && shut) continue;
+    // A prerequisite we cannot perform stops the walk, and says what is missing.
+    // The route is real; we simply lack the item it wants.
+    if(b.missingItem){
+      if(!isCustomExit(walk.lastDir)) continue;
+      const item = neededItem(walk.lastDir);
+      finish(false, 'that way needs ' + (item ? '"' + item + '"' : 'an item')
+        + ', which you are not carrying (' + walk.lastDir + ')');
+      return;
+    }
     if(b.noportal && currentRoom.uid){
       try { sqlDb.run('UPDATE rooms SET noportal=1 WHERE uid=?', [currentRoom.uid]); } catch(e){}
     }
