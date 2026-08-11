@@ -862,6 +862,16 @@ export function xcpStep(t){
       xcpStep(t);
       return;
     }
+    // For campaign-hunt mode, the hunt trick comes FIRST -- it is free, needs no
+    // travel, and names the exact copy, so `where` then has one ordinal to place
+    // rather than a list to enumerate and guess between. This is the order
+    // help/HuntTrick describes. If hunt cannot resolve the ordinals (outside the
+    // area, or a keyword that matches other mobs too) it falls through to the
+    // enumeration below on its own.
+    if(sndState.xcpMode==='ch' && !t.huntTried){
+      t.huntTried = true;
+      if(xcpIdentifyInArea(t)) return;
+    }
     // For campaign-hunt mode, enumerate instances with where 1.<full name>, where 2.<full name>, etc.
     if(sndState.xcpMode==='ch' || sndState.xcpMode==='ht'){
       if(!t.whereInstances){
@@ -1018,13 +1028,33 @@ const IDENTIFY_MAX  = 12;
  * campaign mob it is refused. That refusal is the only thing that distinguishes
  * them, and it is available only from here.
  */
-export function xcpIdentifyHere(t){
-  if(!t || t.is_dead) return;
+export function xcpIdentifyHere(t){ return startIdentify(t, 'kill'); }
+
+/**
+ * Identify the campaign copy, then ask `where` the same ordinal to place it.
+ *
+ * This is the order help/HuntTrick gives, and it is the right way round: hunt
+ * costs nothing and needs no travel, so finding the copy first means travelling
+ * once, to a room the target is actually in. Identifying on arrival instead
+ * bought a wasted trip to The Knossos Senate for a senator that was not there.
+ *
+ * The ordinals do line up between `hunt` and `where` -- for a keyword that
+ * matches only this mob. `where 6.small` in Hedgehogs' Paradise was counting a
+ * small worker bee and a small apple tree as well as the hedgehog, so ITS sixth
+ * match meant nothing to hunt; that is a property of a loose keyword, not of the
+ * two commands disagreeing.
+ */
+export function xcpIdentifyInArea(t){ return startIdentify(t, 'locate'); }
+
+function startIdentify(t, then){
+  if(!t || t.is_dead) return false;
   const kw = actionKw(t) || gmkw(t.mob);
-  if(!kw){ xcpKillTarget(t); return; }
-  sndState.pendingIdentify = {t, kw, ord: 1, ts: Date.now()};
-  appendOutput('[S&D] in the room -- testing which copy of "'+t.mob+'" cannot be hunted...\n','quest');
+  if(!kw) return false;
+  sndState.pendingIdentify = {t, kw, ord: 1, ts: Date.now(), then};
+  appendOutput('[S&D] ' + (then === 'kill' ? 'in the room -- testing' : 'testing')
+    + ' which copy of "'+t.mob+'" cannot be hunted...\n','quest');
   sendCmd('hunt '+kw);
+  return true;
 }
 
 function identifyProbe(st){
@@ -1045,12 +1075,25 @@ export function parseIdentifyOutput(text){
     // Refused: this is the campaign mob.
     sndState.pendingIdentify = null;
     appendOutput('[S&D] copy '+st.ord+' cannot be hunted -- that is the campaign mob.\n','quest');
+    st.t.huntOrdKw = ordKw;          // the exact copy, for the kill
+    if(st.then === 'locate'){
+      // help/HuntTrick: ask `where` the same ordinal to find which room it is in.
+      appendOutput('[S&D] locating it (where '+ordKw+')...\n','quest');
+      sndState.pendingWhereOrd = {t: st.t, ordKw, ts: Date.now()};
+      sendCmd('where '+ordKw);
+      return;
+    }
     xcpKillTarget(st.t, ordKw);
     return;
   }
   if(HUNT_IS_HERE.test(clean)){
     if(st.ord >= IDENTIFY_MAX){
       sndState.pendingIdentify = null;
+      if(st.then === 'locate'){
+        appendOutput('[S&D] no unhuntable copy in the first '+st.ord+'; enumerating with where instead.\n','quest');
+        xcpStep(st.t);
+        return;
+      }
       appendOutput('[S&D] tested '+st.ord+' copies of "'+st.t.mob+'" and every one can be hunted,\n'
         + '       so none of them is your campaign target. Try again after a repop.\n','error');
       sndState.pendingXcp = null;
@@ -1061,8 +1104,20 @@ export function parseIdentifyOutput(text){
     return;
   }
   if(HUNT_NO_SUCH.test(clean)){
-    // Run past the number of copies present.
+    // Run past the number of copies hunt can see.
     sndState.pendingIdentify = null;
+    // Identifying before travelling is an optimisation, not the only route: if
+    // hunt cannot resolve the ordinals from here -- outside the area, or a
+    // keyword like `small` that also matches a worker bee and an apple tree --
+    // fall back to enumerating with `where`, which is what used to happen anyway.
+    if(st.then === 'locate'){
+      // Every copy hunt could see has been tested. Note that, so arriving at the
+      // room does not repeat the identical probe and get the identical answers.
+      if(st.ord > 1) st.t.huntExhausted = true;
+      appendOutput('[S&D] hunt cannot pick a copy from here; enumerating with where instead.\n','quest');
+      xcpStep(st.t);
+      return;
+    }
     if(st.ord <= 1){
       appendOutput('[S&D] hunt cannot see '+t2name(st)+' from here; killing by keyword instead.\n','quest');
       xcpKillTarget(st.t);
@@ -1076,6 +1131,40 @@ export function parseIdentifyOutput(text){
   }
 }
 function t2name(st){ return st.t && st.t.mob ? st.t.mob : st.kw; }
+
+// `where 4.senator` answers with the fixed-width column layout `where` always
+// uses: 30 characters of mob name, then the room.
+const WHERE_ROW = /^(.{1,30}?)\s{2,}([^ (0-9].*?)\s*$/;
+
+/** Feed MUD output here: the reply to the `where <n>.<kw>` that follows an identify. */
+export function parseWhereOrdOutput(text){
+  const st = sndState.pendingWhereOrd;
+  if(!st) return;
+  if(Date.now() - st.ts > 8000){ sndState.pendingWhereOrd = null; return; }
+  const clean = stripAnsi(text);
+  if(/there is no |no one (?:in this area |here )?by/i.test(clean)){
+    sndState.pendingWhereOrd = null;
+    appendOutput('[S&D] where could not place '+st.ordKw+'; falling back to the room list.\n','quest');
+    return;                        // the ordinary where-enumeration flow continues
+  }
+  for(const line of clean.split(/\r?\n/)){
+    const m = line.match(WHERE_ROW);
+    if(!m) continue;
+    // The vitals prompt has the same two-column shape ("[2998/2998hp ...]  >"),
+    // so reject anything whose first column looks like a prompt and anything whose
+    // second is too short to be a room name.
+    if(/^\[/.test(m[1].trim())) continue;
+    const room = m[2].trim();
+    if(room.length < 3 || !/[a-z]/i.test(room)) continue;
+    sndState.pendingWhereOrd = null;
+    appendOutput('[S&D] the campaign '+st.t.mob+' is in '+room+'.\n','quest');
+    st.t.located = true;
+    st.t.campaignInstance = {n: st.ordKw, roomName: room, roomUid: null};
+    st.t.whereInstances = [st.t.campaignInstance];
+    xcpGotoInstance(st.t);
+    return;
+  }
+}
 
 /** Move to the next candidate keyword. Returns false when they are exhausted. */
 export function advanceWhereKeyword(t){
@@ -1904,8 +1993,12 @@ export function xcpContinueHuntTrick(t, inst){
  * told apart, and this is the only place `hunt` can do it.
  */
 function onArriveAtInstance(t){
+  // Already identified by the hunt trick before we set off: kill that exact copy.
+  if(t.huntOrdKw){ xcpKillTarget(t, t.huntOrdKw); return; }
+  // The in-area probe already tested every copy hunt can see; repeating it here
+  // would ask the same questions and get the same answers.
   const many = (t.whereInstances && t.whereInstances.length > 1);
-  if(sndState.xcpMode === 'ch' && many) xcpIdentifyHere(t);
+  if(sndState.xcpMode === 'ch' && many && !t.huntExhausted) xcpIdentifyHere(t);
   else xcpKillTarget(t);
 }
 
