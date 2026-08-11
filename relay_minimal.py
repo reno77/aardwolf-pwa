@@ -7,6 +7,7 @@ Aardwolf Minimal Relay v14
 """
 import asyncio, aiohttp, json, re
 import socket
+import sqlite3
 from aiohttp import web
 from pathlib import Path
 import os
@@ -413,10 +414,281 @@ async def static_file(request):
 async def gaardian_db(request):
     return serve('gaardian_maps.db')
 
-app = web.Application()
+# =============================================================================
+# MAP SYNC
+# =============================================================================
+# Each client keeps its map in its own browser IndexedDB, so the phone and the PC
+# learn the world separately: rooms walked on one are simply absent on the other,
+# and the expensive knowledge -- which live room is which Gaardian room -- has to
+# be re-earned on both. This is the shared copy they merge through.
+#
+# It is deliberately NOT "upload your database": that would make whichever client
+# synced last the winner and throw the other one's mapping away. The unit is the
+# row. A client pushes the rows it has learned since its last sync, the server
+# stamps them with a revision, and hands back every row stamped by anyone else
+# since the revision that client last saw. Both sides end up with the union.
+#
+# What is NOT synced, and why:
+#   room_candidates    hypotheses, not knowledge -- each client narrows its own
+#   gaardian_imported  says what THIS client has imported; sharing it would make
+#                      a client believe it holds rooms it has never loaded
+#   aliases/triggers/  user configuration rather than map data; /export still
+#   buttons            moves those, and silently overwriting them would be rude
+#
+# One known limitation: a deletion does not travel. When the walker proves an
+# exit does not exist it deletes the row, and the other client -- which still has
+# it -- will push it back on its next sync. That is the conservative direction to
+# fail in (the row is re-learned, not lost), and the walker deletes it again the
+# first time it tries to use it.
+SYNC_DB_PATH = Path(__file__).parent / "mapsync.db"
+
+# Optional shared secret. The relay has no authentication of any kind, so with a
+# token unset anything that can reach it can write to the shared map. Set
+# AARD_SYNC_TOKEN on the relay and `/synctoken <value>` in the client to require
+# one. Left unset it stays open, which is what a LAN-only relay wants.
+SYNC_TOKEN = os.environ.get('AARD_SYNC_TOKEN', '')
+
+# Wire name -> (primary key columns, all columns). The client maps its own table
+# names onto these, so `room_gaardian_map` travels as `anchors`. Columns carry no
+# declared type on purpose: SQLite stores what it is given, and the client is the
+# only thing that has to agree about what a column means.
+SYNC_TABLES = {
+    'rooms': (
+        ['uid'],
+        ['uid', 'area', 'name', 'terrain', 'info', 'x', 'y', 'z', 'exits',
+         'noportal', 'norecall', 'acoord_x', 'acoord_y', 'acoord_id',
+         'first_seen', 'last_visited'],
+    ),
+    'exits': (
+        ['from_uid', 'dir'],
+        ['from_uid', 'dir', 'to_uid', 'level', 'door', 'key_name', 'key_desc',
+         'key_room', 'random'],
+    ),
+    'anchors': (
+        ['aardwolf_uid'],
+        ['aardwolf_uid', 'gaardian_areaid', 'gaardian_local_id', 'gaardian_name',
+         'matched_at'],
+    ),
+    'areas': (
+        ['name'],
+        ['name', 'key', 'minlvl', 'maxlvl', 'lock', 'nogo', 'norunto',
+         'entry_note', 'entry_area', 'entry_x', 'entry_y', 'entry_landmark',
+         'entry_item'],
+    ),
+    'mobs': (
+        ['mob', 'area', 'room'],
+        ['mob', 'area', 'room', 'room_uid', 'seen_count', 'last_seen'],
+    ),
+}
+
+# How many rows one response may carry. A first sync from a well-walked client is
+# tens of thousands of rows; handing them over in bounded pages keeps both the
+# response and the client's apply loop to a size a phone can cope with. The
+# client syncs again while the reply says there is more.
+SYNC_PAGE_ROWS = 4000
+
+
+def _quote(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _sync_conn():
+    conn = sqlite3.connect(SYNC_DB_PATH, timeout=10)
+    # WAL so a long read cannot block the next client's push.
+    conn.execute('PRAGMA journal_mode=WAL')
+    for table, (keys, cols) in SYNC_TABLES.items():
+        conn.execute('CREATE TABLE IF NOT EXISTS %s (%s, rev INTEGER, PRIMARY KEY (%s))' % (
+            _quote(table),
+            ', '.join(_quote(c) for c in cols),
+            ', '.join(_quote(k) for k in keys)))
+        conn.execute('CREATE INDEX IF NOT EXISTS %s ON %s(rev)' % (
+            _quote('idx_%s_rev' % table), _quote(table)))
+    conn.execute('CREATE TABLE IF NOT EXISTS state(k TEXT PRIMARY KEY, v)')
+    conn.commit()
+    return conn
+
+
+def _scalar(v):
+    """Anything a JSON row can hold, reduced to something SQLite will store."""
+    if isinstance(v, bool):        # bool is a subclass of int; check it first
+        return 1 if v else 0
+    if v is None or isinstance(v, (str, int, float)):
+        return v
+    return json.dumps(v)
+
+
+def _sync_apply(payload):
+    """Merge the client's rows, then hand back everyone else's. Runs in a thread."""
+    try:
+        since = int(payload.get('since') or 0)
+    except (TypeError, ValueError):
+        since = 0
+    push = payload.get('push') or {}
+    conn = _sync_conn()
+    try:
+        cur = conn.cursor()
+        row = cur.execute("SELECT v FROM state WHERE k='rev'").fetchone()
+        base = int(row[0]) if row and row[0] is not None else 0
+        # Everything this client pushes lands on one new revision, so the pull
+        # below can exclude it with a single comparison instead of echoing the
+        # client's own rows straight back at it.
+        new_rev = base + 1
+        pushed = {}
+        for table, (keys, cols) in SYNC_TABLES.items():
+            rows = push.get(table)
+            if not isinstance(rows, list) or not rows:
+                continue
+            sql = 'INSERT OR REPLACE INTO %s (%s, rev) VALUES (%s)' % (
+                _quote(table),
+                ', '.join(_quote(c) for c in cols),
+                ', '.join('?' * (len(cols) + 1)))
+            n = 0
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                vals = [_scalar(r.get(c)) for c in cols]
+                # A row missing part of its primary key is not a row.
+                if any(vals[cols.index(k)] in (None, '') for k in keys):
+                    continue
+                # Sightings accumulate rather than overwrite: the count is
+                # evidence from both clients, so the larger one is the better
+                # answer. Everything else is last-writer-wins.
+                if table == 'mobs':
+                    at = {c: i for i, c in enumerate(cols)}
+                    have = cur.execute(
+                        'SELECT seen_count FROM mobs WHERE mob=? AND area=? AND room=?',
+                        [vals[at['mob']], vals[at['area']], vals[at['room']]]).fetchone()
+                    if have and have[0] is not None:
+                        try:
+                            vals[at['seen_count']] = max(
+                                int(vals[at['seen_count']] or 0), int(have[0]))
+                        except (TypeError, ValueError):
+                            pass
+                cur.execute(sql, vals + [new_rev])
+                n += 1
+            if n:
+                pushed[table] = n
+        if pushed:
+            cur.execute("INSERT OR REPLACE INTO state(k, v) VALUES ('rev', ?)", [new_rev])
+
+        # Rows anyone else has written since this client last looked. `rev <= base`
+        # keeps the push above out of the reply.
+        #
+        # Paging is by REVISION, never by row: a revision is one client's push,
+        # and cutting it in half would hand over an incomplete merge while moving
+        # the watermark past the rest. So count the rows per revision first, then
+        # take whole revisions until the budget runs out. A single revision that
+        # is bigger than the budget goes over it rather than being split.
+        per_rev = {}
+        for table, (keys, cols) in SYNC_TABLES.items():
+            for rev, n in cur.execute(
+                    'SELECT rev, COUNT(*) FROM %s WHERE rev > ? AND rev <= ? GROUP BY rev' % (
+                        _quote(table),), [since, base]).fetchall():
+                per_rev[rev] = per_rev.get(rev, 0) + n
+        cutoff, taken = since, 0
+        for rev in sorted(per_rev):
+            if taken and taken + per_rev[rev] > SYNC_PAGE_ROWS:
+                break
+            cutoff, taken = rev, taken + per_rev[rev]
+        more = any(rev > cutoff for rev in per_rev)
+
+        pull = {}
+        if cutoff > since:
+            for table, (keys, cols) in SYNC_TABLES.items():
+                got = cur.execute(
+                    'SELECT %s FROM %s WHERE rev > ? AND rev <= ?' % (
+                        ', '.join(_quote(c) for c in cols), _quote(table)),
+                    [since, cutoff]).fetchall()
+                if got:
+                    pull[table] = [dict(zip(cols, r)) for r in got]
+        conn.commit()
+
+        # With more to come, the watermark stops at what was actually handed over
+        # and the client asks again. Otherwise it advances past our own push too.
+        top = cutoff if more else (new_rev if pushed else base)
+        return {
+            'ok': True, 'rev': top, 'more': more,
+            'pushed': pushed,
+            'pull': pull,
+        }
+    finally:
+        conn.close()
+
+
+def _sync_status():
+    conn = _sync_conn()
+    try:
+        cur = conn.cursor()
+        row = cur.execute("SELECT v FROM state WHERE k='rev'").fetchone()
+        counts = {}
+        for table in SYNC_TABLES:
+            counts[table] = cur.execute('SELECT COUNT(*) FROM %s' % _quote(table)).fetchone()[0]
+        return {'ok': True, 'rev': int(row[0]) if row and row[0] is not None else 0,
+                'counts': counts, 'auth': bool(SYNC_TOKEN)}
+    finally:
+        conn.close()
+
+
+def _sync_authorised(request):
+    if not SYNC_TOKEN:
+        return True
+    return request.headers.get('X-Aard-Sync', '') == SYNC_TOKEN
+
+
+def _cors(resp):
+    # The Android app's WebView serves its pages from
+    # https://appassets.androidplatform.net, so its sync request is cross-origin
+    # even though it is the same user's own relay.
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Aard-Sync'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    return resp
+
+
+async def sync_handler(request):
+    if not _sync_authorised(request):
+        return _cors(web.json_response({'ok': False, 'error': 'bad sync token'}, status=403))
+    try:
+        payload = await request.json()
+    except Exception:
+        return _cors(web.json_response({'ok': False, 'error': 'expected JSON'}, status=400))
+    if not isinstance(payload, dict):
+        return _cors(web.json_response({'ok': False, 'error': 'expected an object'}, status=400))
+    try:
+        # sqlite3 blocks, and a first sync is thousands of rows: off the event
+        # loop, or every MUD keystroke waits behind it.
+        out = await asyncio.to_thread(_sync_apply, payload)
+    except Exception as e:
+        return _cors(web.json_response({'ok': False, 'error': str(e)}, status=500))
+    return _cors(web.json_response(out))
+
+
+async def sync_status_handler(request):
+    if not _sync_authorised(request):
+        return _cors(web.json_response({'ok': False, 'error': 'bad sync token'}, status=403))
+    try:
+        out = await asyncio.to_thread(_sync_status)
+    except Exception as e:
+        return _cors(web.json_response({'ok': False, 'error': str(e)}, status=500))
+    return _cors(web.json_response(out))
+
+
+async def sync_options_handler(request):
+    return _cors(web.Response(status=204))
+
+
+# A first sync from a well-walked client is a large JSON body, and aiohttp's
+# default cap is 1MB.
+app = web.Application(client_max_size=64 * 1024 * 1024)
 app.router.add_get('/', index)
 app.router.add_get('/ws', relay.ws_handler)
 app.router.add_get('/gaardian_maps.db', gaardian_db)
+app.router.add_post('/sync', sync_handler)
+app.router.add_get('/sync/status', sync_status_handler)
+app.router.add_route('OPTIONS', '/sync', sync_options_handler)
+# /sync/status is a plain GET until a token is configured, at which point the
+# custom header makes it preflighted too.
+app.router.add_route('OPTIONS', '/sync/status', sync_options_handler)
 app.router.add_get('/static/{filename:.*}', static_file)
 
 if __name__ == '__main__':

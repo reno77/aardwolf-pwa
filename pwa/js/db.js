@@ -557,6 +557,12 @@ export function importGaardianArea(gaardianAreaid, aardwolfAreaName, force){
     }catch(e){ console.error('promote existing rooms error', e); }
 
     markAreaImported(gaardianAreaid);
+    // Identifications we already hold for this area -- ours from a previous
+    // session, or another client's arriving through sync.js -- could not be
+    // merged while the area was absent, and the name-match loop above cannot
+    // rescue them because a repeated room name is exactly the case it refuses to
+    // guess at. Now that the rooms exist, attach them.
+    promoteAnchoredRooms();
     // A room promoted just now may have had a Gaardian exit collide with a GMCP
     // one, which leaves the Gaardian destination held under a synthetic uid that
     // nothing points at. The deduction that joins the two is the same one used on

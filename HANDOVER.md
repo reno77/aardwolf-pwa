@@ -514,6 +514,73 @@ Two bugs fixed that will bite you again if reintroduced:
   `room.info` and the client has no idea where it is. The client now sends
   `{action:'gmcp_request'}` once it sees a prompt, and the relay re-requests.
 
+## 7e. Map sync between clients (`/sync`)
+
+Each client keeps its map in its own browser IndexedDB, so the phone and the PC
+learn the world separately: rooms walked on one are absent on the other, and the
+expensive part — which live room is which Gaardian room — has to be earned twice.
+`relay_minimal.py` holds a shared copy they merge through, and `pwa/js/sync.js`
+does the merging.
+
+**The unit is the row, not the file.** Uploading a database would make whichever
+client synced last the winner and silently discard the other one's mapping.
+Instead a client pushes what it has learned since its last sync, the relay stamps
+those rows with a revision, and returns every row stamped by anyone else since
+the revision this client last saw. Both sides converge on the union.
+
+Endpoints (`relay_minimal.py`): `POST /sync`, `GET /sync/status`, plus an
+`OPTIONS` for the preflight — the Android WebView serves its pages from
+`https://appassets.androidplatform.net`, so its sync is cross-origin. The store is
+`mapsync.db` next to the relay; delete it to start the shared map over.
+
+Commands: `/sync` runs one now, `/syncstatus` says what the relay holds and where
+this client has got to, `/syncreset` clears the watermarks so the next `/sync`
+exchanges everything, `/syncurl <url>` points at a different relay (the Android
+app needs this — it has no relay in its request path at all, so it defaults to the
+public tunnel), `/synctoken <value>` sets the shared secret. It also runs
+automatically 3s after `noticeInGame` fires, which is the first prompt carrying
+hit points — the moment the character is actually in the world.
+
+What travels: `rooms` and `exits` for **live** uids only, `room_gaardian_map`
+(the identifications, and the whole point), `areas` (harvested keywords and entry
+hints), `mobs` (merged on the larger `seen_count`). What does not, and why:
+
+- **`gaardian:<area>:<id>` rows** — the imported reference skeleton. Both clients
+  ship the same `gaardian_maps.db` and re-derive them for free.
+- **`room_candidates`** — hypotheses, not knowledge. Each client narrows its own
+  from what it has seen; importing another's guesses lets a wrong one win.
+- **`gaardian_imported`** — records what *this* client has imported. Shared, it
+  would make a client believe it holds rooms it has never loaded and skip the
+  import that would fix that.
+- **aliases / triggers / buttons** — user configuration. `/export` moves those,
+  deliberately and visibly.
+
+Three things worth knowing before you change it:
+
+- **Paging is by revision, never by row.** A revision is one client's push;
+  splitting one would hand over half a merge while moving the watermark past the
+  rest. A single revision larger than `SYNC_PAGE_ROWS` goes over budget rather
+  than being cut.
+- **Two watermarks, measuring different things.** `sync_rev` is the relay's
+  counter as of our last pull and decides what we are *sent*. `sync_mark` is the
+  newest local timestamp we have already pushed and decides what we *send* — a
+  timestamp we wrote ourselves rather than `now`, so a phone whose clock
+  disagrees cannot make us skip rows.
+- **Deletions do not travel.** When the walker proves an exit does not exist it
+  deletes the row; the other client still has it and pushes it back. That is the
+  safe direction to fail in — re-learned, not lost — and the walker deletes it
+  again the first time it tries to use it.
+
+The relay has no authentication of any kind, so with `AARD_SYNC_TOKEN` unset
+anything that can reach it can write to the shared map (it can also already drive
+the MUD session, which is the larger hole). Set the env var on the relay and
+`/synctoken` in each client to require one.
+
+`importGaardianArea` calls `promoteAnchoredRooms()` so a pulled identification
+attaches the moment the area is imported. Without that it sat unusable until the
+next reload, because the name-match loop refuses to guess at a repeated room name
+— which is exactly the case identification exists for.
+
 ## 7a. Running the relay on Windows while the tunnel lives in WSL
 
 The deployment was historically a `relay_minimal.py` inside WSL, supervised by

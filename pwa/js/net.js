@@ -13,6 +13,8 @@ import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { commandMap } from './state.js';
 import { openTransport } from './transport.js';
+import { setSyncBase, setSyncToken, syncBase, syncMap, syncOnLogin, syncReset,
+         syncStatus } from './sync.js';
 import { appendOutput, checkQuest, clearOutput, maxLines, processTriggers, setMaxLines, togglePanel, triggered } from './ui.js';
 // --- state owned by this module ---
 export let ws=null;
@@ -78,6 +80,10 @@ export function noticeInGame(text){
   if(!/\d+\/\d+hp/.test(text)) return;
   gmcpRequested=true;
   setTimeout(requestGmcpState, 500);
+  // Being in the world is also the moment to merge maps with the other clients:
+  // the phone should start the session holding what the PC learned in the last
+  // one, without anyone having to remember to press anything.
+  syncOnLogin();
 }
 
 // -----------------------------------------------------------------------------
@@ -255,6 +261,21 @@ export function submitCmd(){
     if(cmd==='xcpmode'){ setXcpMode(parts[1]||''); return; }
     if(cmd==='ht'){ doHuntTrick(parts.slice(1).join(' ').trim()); return; }
     if(cmd==='qw'){ doQuickWhere(parts.slice(1).join(' ').trim()); return; }
+    if(cmd==='sync'){ syncMap({}); return; }
+    if(cmd==='syncstatus'){ syncStatus(); return; }
+    if(cmd==='syncreset'){ syncReset(); return; }
+    if(cmd==='syncurl'){
+      const url=parts.slice(1).join(' ').trim();
+      if(url){ setSyncBase(url === 'default' ? '' : url); appendOutput('[sync] relay set to '+syncBase()+'\n','system'); }
+      else { appendOutput('[sync] relay is '+syncBase()+' (/syncurl <url> to change, /syncurl default to reset)\n','system'); }
+      return;
+    }
+    if(cmd==='synctoken'){
+      const tok=parts.slice(1).join(' ').trim();
+      setSyncToken(tok === 'off' ? '' : tok);
+      appendOutput('[sync] token '+(tok && tok!=='off' ? 'set' : 'cleared')+'\n','system');
+      return;
+    }
     if(cmd==='crr'){ sendCmd('crr'); return; }
     if(cmd==='clear'){ clearOutput(); return; }
     if(cmd==='buffer'){ setMaxLines(parseInt(parts[1])||200); appendOutput('Buffer set to '+maxLines+'\n','system'); return; }

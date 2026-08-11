@@ -50,5 +50,5 @@ initDb().then(()=>{
   appendOutput('All data stored in browser.\n','system');
   appendOutput('Swipe: rooms → aliases → triggers\n','system');
   appendOutput('Shortcut row: tap to send, hold to edit, + to add\n','system');
-  appendOutput('Commands: /runto, /aliases, /triggers, /rooms, /map, /cpinfo, /cpcheck, /xcp, /xcpmode, /ht, /qw, /export, /import\n','system');
+  appendOutput('Commands: /runto, /aliases, /triggers, /rooms, /map, /cpinfo, /cpcheck, /xcp, /xcpmode, /ht, /qw, /export, /import, /sync\n','system');
 });

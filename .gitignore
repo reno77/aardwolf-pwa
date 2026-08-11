@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+# The relay's shared map store (see MAP SYNC in relay_minimal.py). Derived from
+# what the clients have walked, and per-deployment.
+mapsync.db
+mapsync.db-wal
+mapsync.db-shm
