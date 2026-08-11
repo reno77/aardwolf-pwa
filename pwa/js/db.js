@@ -27,7 +27,24 @@ export async function replaceDb(bytes){
 // Schema version. Bump when the shape below changes; initDb rebuilds the map
 // tables on mismatch (they are re-derivable from the Gaardian DB and from
 // walking, unlike aliases/triggers, which are migrated across).
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
+
+// v4 rebuilds the map because the importer was destroying edges, and the damage
+// cannot be repaired in place. The promote-existing-rooms pass took the FIRST
+// Gaardian room with a matching name (`LIMIT 1`) and merged the live room onto
+// it. Whenever the name repeats that is a coin toss, and merging is destructive:
+// the Gaardian exits move onto the live uid, and any direction GMCP already knew
+// wins the collision, so the Gaardian destination is simply dropped.
+//
+// In Aardington Estate "East wing" is rooms 43 and 47. The live room was merged
+// onto 43, and 43's `n` -- the ONLY inbound edge the Dining room has -- was lost
+// to the GMCP `n`. The campaign mob "a very large portrait" stands in that Dining
+// room, one step north, and /xcp reported "no route to that room from here".
+//
+// Nothing can deduce the lost edge afterwards: the row that recorded it is gone
+// and the candidate set still names a room with no row. So the map is rebuilt,
+// which it is designed for -- it is derivable from Gaardian and from walking,
+// unlike aliases, triggers and buttons, which are carried across.
 
 // v3 rebuilds the map because v2 stored live-discovered rooms with the y axis
 // mirrored (see BACK_FROM_NEIGHBOUR in gmcp.js) -- those coordinates cannot be
@@ -453,18 +470,40 @@ export function importGaardianArea(gaardianAreaid, aardwolfAreaName, force){
          areaName, gaardianAreaName]);
       const localRows=localRes[0]?.values||[];
       for(const [uid,name,localArea] of localRows){
-        const gRes=gaardianDb.exec('SELECT local_id FROM rooms WHERE areaid=? AND LOWER(roomname)=LOWER(?) LIMIT 1', [gaardianAreaid, name]);
-        if(gRes.length && gRes[0].values.length){
-          const localId=gRes[0].values[0][0];
-          // Only promote if the local area is plausibly the same as the Gaardian area.
-          if(localArea.toLowerCase()===areaName || localArea.toLowerCase()===gaardianAreaName || areaNameMatches(areaName, localArea) || areaNameMatches(gaardianAreaName, localArea)){
-            promoteGaardianRoom(uid, gaardianAreaid, localId, areaName);
-          }
+        // No LIMIT 1. It used to take the first Gaardian room with a matching
+        // name and promote onto it, which is a coin toss whenever the name
+        // repeats -- and promotion is destructive, so a wrong call cannot be
+        // taken back.
+        //
+        // Confirmed in Aardington Estate: "East wing" is rooms 43 and 47, the
+        // live room was promoted onto 43 arbitrarily, and 43's `n` exit -- the
+        // ONLY inbound edge the Dining room has -- was dropped in favour of the
+        // GMCP `n` the live room already had. The campaign's "a very large
+        // portrait" sits in that Dining room, one step away, and /xcp reported
+        // "no route".
+        //
+        // Identification of an ambiguous room is matchAardwolfToGaardian's job:
+        // it keeps a candidate set and lets the exit graph settle it. Promote
+        // only when the name is unique in the area, so there is nothing to guess.
+        const gRes=gaardianDb.exec(
+          'SELECT local_id FROM rooms WHERE areaid=? AND LOWER(roomname)=LOWER(?)',
+          [gaardianAreaid, name]);
+        const ids=(gRes[0]?.values||[]).map(v=>v[0]);
+        if(ids.length!==1) continue;
+        const localId=ids[0];
+        // Only promote if the local area is plausibly the same as the Gaardian area.
+        if(localArea.toLowerCase()===areaName || localArea.toLowerCase()===gaardianAreaName || areaNameMatches(areaName, localArea) || areaNameMatches(gaardianAreaName, localArea)){
+          promoteGaardianRoom(uid, gaardianAreaid, localId, areaName);
         }
       }
     }catch(e){ console.error('promote existing rooms error', e); }
 
     markAreaImported(gaardianAreaid);
+    // A room promoted just now may have had a Gaardian exit collide with a GMCP
+    // one, which leaves the Gaardian destination held under a synthetic uid that
+    // nothing points at. The deduction that joins the two is the same one used on
+    // load, so run it here too rather than leaving the area broken until restart.
+    reconnectDanglingExits();
     appendOutput(`[Gaardian] Imported ${inserted} rooms and ${stats.total} exits for ${areaName}`
       + (stats.custom ? ` (${stats.custom} custom, ${stats.doors} doors)` : '')
       + (stats.random ? `, ${stats.random} random` : '')
