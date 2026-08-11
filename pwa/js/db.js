@@ -993,10 +993,24 @@ export function reconnectDanglingExits(){
   let fixed = 0;
   try {
     for(let round = 0; round < 3; round++){
+      // Every exit that leaves an IDENTIFIED room and lands on a room we have not
+      // identified. The first version of this asked for a to_uid with no row at
+      // all, which only caught neighbours never visited. But the split happens
+      // just as readily between two rooms you have both stood in: promoting the
+      // first one moves its Gaardian exits onto the live uid, GMCP wins the
+      // directions it already knew, and the Gaardian destinations are left under
+      // synthetic uids with nothing pointing at them.
+      //
+      // Seen in Hedgehogs' Paradise: standing in A flower garden, correctly
+      // identified as gaardian:330:16, with only its two GMCP edges -- and both
+      // "A grove of apple trees" rooms unreachable, though Gaardian connects all
+      // 51 rooms of that area from room 16.
       const r = sqlDb.exec(
         `SELECT e.from_uid, e.dir, e.to_uid
-           FROM exits e LEFT JOIN rooms r ON r.uid = e.to_uid
-          WHERE r.uid IS NULL AND e.to_uid NOT LIKE 'gaardian:%'`);
+           FROM exits e
+           JOIN room_gaardian_map m  ON m.aardwolf_uid  = e.from_uid
+           LEFT JOIN room_gaardian_map m2 ON m2.aardwolf_uid = e.to_uid
+          WHERE m2.aardwolf_uid IS NULL AND e.to_uid NOT LIKE 'gaardian:%'`);
       const dangling = r[0]?.values || [];
       if(!dangling.length) break;
       let changed = 0;

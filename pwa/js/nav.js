@@ -18,7 +18,7 @@
 //     so that test was false every time and *every* custom-exit step aborted
 //     with "is not available here". A custom exit is now simply typed.
 
-import { gaardianCandidateUids, sqlDb } from './db.js';
+import { gaardianCandidateUids, reconnectDanglingExits, sqlDb } from './db.js';
 import { parseKeySource } from './keys.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,
@@ -211,7 +211,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-2.3';
+export const NAV_BUILD = 'nav-2.6';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -262,7 +262,18 @@ export function walkTo(targetUid, onDone, onFail, opts){
   }
   if(currentRoom.uid === targetUid){ if(onDone) onDone(); return true; }
 
-  const plan = planRoute(currentRoom.uid, targetUid);
+  let plan = planRoute(currentRoom.uid, targetUid);
+  if(plan.path === null){
+    // The map splits again every time a room is promoted: its Gaardian exits move
+    // onto the live uid and GMCP wins the directions it already knew, orphaning
+    // the Gaardian destinations. The deduction that rejoins them runs at load and
+    // after an import, which is not often enough -- promotions happen mid-walk,
+    // so a route that existed a moment ago can vanish underneath us.
+    //
+    // Run it here, where the cost is paid only when a route is actually missing,
+    // and try once more before reporting failure.
+    if(reconnectDanglingExits()) plan = planRoute(currentRoom.uid, targetUid);
+  }
   const path = plan.path;
   if(path === null){
     appendOutput('[nav] no route to that room from here'
@@ -514,6 +525,31 @@ const BLOCKED = [
 // -- in Diamond Soul Revelation, one gate short of the arboretum.
 const SOMETHING_SHUT = /\b(?:is|are) closed\b|^the \w+ is closed/im;
 
+/**
+ * Put the step we just failed back on the plan, so it is retried and not skipped.
+ *
+ * step() sets `walk.plan = path.slice(1)` when it issues a move -- the plan is
+ * "what comes after this one". If the move is then refused (a shut door, a stand,
+ * a stumble) the step never happened, but the plan has already moved past it. In
+ * blind mode, where the plan IS the route because re-pathing cannot see the room
+ * we are in, that is how a walk carries on from a room it never entered:
+ *
+ *     > n
+ *     The door is closed.
+ *     > open n
+ *     > w                    <- should have been n again
+ *     [nav] there is no w here; removed it from the map
+ *
+ * and the wrong turn then deleted a perfectly good edge. Seen in Diamond Soul
+ * Revelation, one room short of the arboretum.
+ */
+function unspendLastStep(){
+  if(!walk || !walk.lastDir) return;
+  if(!Array.isArray(walk.plan)) walk.plan = [];
+  if(walk.plan[0] && walk.plan[0].dir === walk.lastDir) return;   // already there
+  walk.plan.unshift({dir: walk.lastDir, uid: walk.expectUid || null, random: false});
+}
+
 /** Called from net.js for every line of MUD output while a walk is active. */
 export function onMudText(text){
   if(!walk || !text) return;
@@ -531,6 +567,7 @@ export function onMudText(text){
     }
     if(b.open && walk.lastDir && !isCustomExit(walk.lastDir) && !walk.opened){
       walk.opened = true;
+      unspendLastStep();
       sendCmdRaw('open ' + walk.lastDir);
       clearStepTimer();
       walk.timer = setTimeout(step, 800);
@@ -539,8 +576,8 @@ export function onMudText(text){
     // Informational only: a step is already scheduled, let it run.
     if(b.ignore) return;
     if(b.locked) reportKeyFor(walk.lastFrom, walk.lastDir);
-    if(b.stand){ sendCmdRaw('stand'); clearStepTimer(); walk.timer = setTimeout(step, 800); return; }
-    if(b.retry){ clearStepTimer(); walk.timer = setTimeout(step, 1200); return; }
+    if(b.stand){ unspendLastStep(); sendCmdRaw('stand'); clearStepTimer(); walk.timer = setTimeout(step, 800); return; }
+    if(b.retry){ unspendLastStep(); clearStepTimer(); walk.timer = setTimeout(step, 1200); return; }
     // The exit is real but you are not allowed through it. Park it at level 999
     // -- the "never auto-path" marker the schema already has -- so the router
     // goes round rather than walking into the same guard every time. It stays in

@@ -974,6 +974,16 @@ export function xcpRunCampaignHunt(t){
   }
   const inst=t.whereInstances[t.huntTrickIndex-1];
   t.campaignInstance=inst;
+  // With one instance there is nothing to disambiguate, so skip the hunt test.
+  // It is not merely wasted: `where` and `hunt` index different lists, so the
+  // where-ordinal often means nothing to hunt. `where 6.small` found the mob in
+  // A flower garden, `hunt 6.small` answered "No one in this area by the name
+  // '6.small'.", and the helper sat there. The single instance IS the target.
+  if(t.whereInstances.length===1){
+    appendOutput('[S&D] only one '+t.mob+' here, in '+inst.roomName+' -- going straight there.\n','quest');
+    xcpGotoInstance(t);
+    return;
+  }
   appendOutput('[S&D] testing instance '+inst.n+' with campaign hunt...\n','quest');
   xcpContinueCampaignHunt(t, inst);
 }
@@ -1702,6 +1712,26 @@ export function parseHuntTrickOutput(text){
   const inst=h.instance;
   h.responded=true;
   clearTimeout(sndState.huntTrickTimeout||null);
+
+  // "No one in this area by the name '6.small'." -- hunt could not resolve the
+  // ordinal at all, which is different from refusing to hunt a campaign mob.
+  // Nothing matched it, so the state machine stopped dead and waited for a reply
+  // that had already arrived. Advance to the next instance instead.
+  // Two different ways hunt declines to help, neither of which said anything
+  // about the mob being the campaign target, and neither of which was matched --
+  // so the state machine stopped dead waiting for a reply that had arrived:
+  //   No one in this area by the name '6.senator'.   (ordinal means nothing to hunt)
+  //   You couldn't find a path to a senator from here. (outside the city gates)
+  // In both cases `where` has already named the room, so go by the map.
+  const noSuchOrdinal=/no one (?:in this area |here )?by (?:the |that )?name|could ?n[o']?t find a path/i;
+  if(lines.some(line=>noSuchOrdinal.test(line))){
+    appendOutput('[S&D] hunt does not know "'+inst.n+'.'+(target.htkw||'')
+      + '" -- where and hunt number things differently; going by room instead.\n','quest');
+    sndState.pendingHuntTrick=null;
+    target.campaignInstance=inst;
+    xcpGotoInstance(target);
+    return;
+  }
 
   const unable=/unable\s+to\s+hunt\s+that\s+target|seem\s+unable\s+to\s+hunt|campaign.*unable/i;
   if(lines.some(line=>unable.test(line))){
