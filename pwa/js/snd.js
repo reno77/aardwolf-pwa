@@ -1816,11 +1816,28 @@ export function xcpKillTarget(t){
   // of us, `kill "trudes tronesetter, queen of the kobaloi"` answered
   // "They aren't here."
   const kw=actionKw(t)||gmkw(t.mob);
-  appendOutput('[S&D] killing '+t.mob+' (kill '+kw+')...\n','quest');
+  // Work through the identical copies in the room by ordinal.
+  //
+  // The Knossos Senate holds SIX senators and `kill senator` always takes the
+  // first, so re-running /xcp killed the same non-campaign one over and over --
+  // three rounds, three dead senators, no progress. The hunt trick cannot pick
+  // the right one either, because `hunt <n>.<kw>` does not share `where`'s
+  // numbering. Nothing distinguishes them from outside, so try them in turn.
+  //
+  // The counter lives on the campaignTargets entry, not on `t`: xcpByIndex builds
+  // a fresh copy of the target on every invocation, so anything kept on `t` is
+  // forgotten between attempts -- which is exactly what has to persist here.
+  const ct = campaignTargets[t.index-1] || t;
+  const seen = (t.whereInstances && t.whereInstances.length) || 1;
+  ct.killOrd = (ct.killOrd || 0) + 1;
+  if(ct.killOrd > Math.max(seen, 8)) ct.killOrd = 1;   // wrap rather than run away
+  const targetKw = ct.killOrd > 1 ? ct.killOrd + '.' + kw : kw;
+  appendOutput('[S&D] killing '+t.mob+' (kill '+targetKw+')'
+    + (ct.killOrd > 1 ? ' -- copy '+ct.killOrd+' of '+seen : '') + '...\n','quest');
   // Watched by parseNotHereOutput: "They aren't here" after this means we are in
   // a room with the right NAME but not the right room. See xcpSweepTwins.
   sndState.pendingKill={t, at:currentRoom.uid, ts:Date.now()};
-  sendCmd('kill '+kw);
+  sendCmd('kill '+targetKw);
   // `cp check` on a flat 5s timer lands in the middle of the fight, so it read the
   // target as still alive every single time -- "finish the fight and /xcp to
   // continue" printed immediately before the mob died. Wait for combat to end
@@ -2024,6 +2041,9 @@ export function xcpVerifyKill(t, onStillAlive){
   // Send cp check; callback runs after result arrives
   sndState.pendingCpCheckCallback=(dead)=>{
     if(dead){
+      // Start the next target's copy-hunt from the first one again.
+      const ct = campaignTargets[t.index-1];
+      if(ct) ct.killOrd = 0;
       appendOutput('[S&D] '+t.mob+' confirmed dead. Moving to next target.\n','quest');
       xcpNext();
     } else {
