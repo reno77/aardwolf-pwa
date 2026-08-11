@@ -695,7 +695,16 @@ export function liveTargets(){
 export function xcpByIndex(index, overrideKw){
   const raw = String(index == null ? '' : index).trim();
   const idx=parseInt(raw);
-  if(idx===0){ sndState.xcpIndex=0; sndState.shortMobName=''; sndState.pendingXcp=null; sndState.xcpAwaitingArea=null; appendOutput('[S&D] xcp target cleared.\n','system'); return; }
+  if(idx===0){
+    sndState.xcpIndex=0; sndState.shortMobName=''; sndState.pendingXcp=null; sndState.xcpAwaitingArea=null;
+    // Clearing the target used to leave the walk itself running: in Wedded Bliss
+    // the character kept pacing between two rooms for minutes after `/xcp 0`,
+    // and the only thing that stopped it was reloading the page. `/xcp 0` is the
+    // stop button, so it has to stop the movement too.
+    cancelWalk('xcp cleared');
+    appendOutput('[S&D] xcp target cleared.\n','system');
+    return;
+  }
   const live = liveTargets();
   let t = null;
   if(/^\d+$/.test(raw)){
@@ -2403,7 +2412,11 @@ function healBeforeFighting(t, resume){
   }
   appendOutput('[S&D] '+Math.round(frac*100)+'% health: healing before the next fight'
     + ' ('+t.healTries+'/'+HEAL_TRIES+').\n','quest');
-  sendCmd('heal');
+  // `cast heal` restores about 257hp for ~35 mana; the `heal` alias is a string of
+  // cure lights worth a fraction of that, so eight rounds of it barely moved the
+  // bar. Prefer the spell and alternate to the alias, which covers a character
+  // that does not have `heal` -- a failed cast costs nothing but the round.
+  sendCmd((t.healTries % 2) ? 'cast heal' : 'heal');
   setTimeout(()=>{
     if(sndState.pendingXcp !== t) return;
     if(hpFraction() >= FIGHT_ABOVE){ t.healTries = 0; resume(); return; }

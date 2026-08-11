@@ -27,8 +27,23 @@ export async function replaceDb(bytes){
 // Schema version. Bump when the shape below changes; initDb rebuilds the map
 // tables on mismatch (they are re-derivable from the Gaardian DB and from
 // walking, unlike aliases/triggers, which are migrated across).
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
+// v5 rebuilds the map because cascadeAnchors identified rooms without ever
+// checking their names. It carries an anchor outwards along matching directions,
+// which is sound only while the live exits and the Gaardian exits agree; where
+// they do not, the two walks slip by one room and every anchor beyond the slip is
+// wrong. Anchoring promotes, and promoting merges rows, so the error is written
+// into the graph and cannot be undone in place.
+//
+// In Wedded Bliss the live room "Decorated Path" was identified as Gaardian
+// 124:2, which is "Comfrey Fountain" -- two rooms further along the real path.
+// That severed the route to At the Band, where the campaign orchestra stands, and
+// the walker then paced between Decorated Path and An Opening in the Hedge for
+// minutes, because from each of them the only route it could still see ran
+// through the other. cascadeAnchors now refuses an anchor whose name contradicts
+// the map.
+//
 // v4 rebuilds the map because the importer was destroying edges, and the damage
 // cannot be repaired in place. The promote-existing-rooms pass took the FIRST
 // Gaardian room with a matching name (`LIMIT 1`) and merged the live room onto
@@ -231,6 +246,12 @@ export async function initDb() {
     const n = backfillRandomExits();
     if(n) appendOutput('[Gaardian] Restored ' + n + ' random exit(s) dropped by an earlier import\n', 'system');
   }
+
+  // A wrong identification is worse than none: it is confident, and nothing
+  // later overturns it. Drop the ones the room's own name contradicts before
+  // anything is merged on the strength of them.
+  const unstuck = dropContradictedAnchors();
+  if(unstuck) appendOutput('[Gaardian] Forgot ' + unstuck + ' room identification(s) the room name contradicts\n', 'system');
 
   // Rooms identified but never merged leave the map split in two at exactly the
   // boundary between the rooms you have walked and the ones you have not.
@@ -803,6 +824,29 @@ function liveExitsOf(uid){
  * edges, so a wrong seed propagated the error across the whole area and the
  * walk died with "lost the route".
  */
+/** The name we recorded for a live room, or '' if we have never been in it. */
+function liveRoomName(uid){
+  try {
+    const r = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [String(uid)]);
+    return (r.length && r[0].values.length) ? String(r[0].values[0][0] || '') : '';
+  } catch(e){ return ''; }
+}
+
+/**
+ * Does the live room agree with the Gaardian room it is about to be called?
+ *
+ * Unknown live name means we have never stood there -- the row is a stub created
+ * from someone else's exit -- and there is nothing to contradict, so allow it.
+ * Two known names that differ is a contradiction, and the anchor is refused.
+ */
+function nameAgrees(uid, areaid, localId){
+  const live = liveRoomName(uid).trim().toLowerCase();
+  if(!live) return true;
+  const ref = String(gaardianRoomName(areaid, localId) || '').trim().toLowerCase();
+  if(!ref) return true;
+  return live === ref;
+}
+
 function cascadeAnchors(seedUid, areaid, seedLocalId, areaName, now){
   const queue = [[String(seedUid), seedLocalId]];
   const seen = new Set([String(seedUid)]);
@@ -817,6 +861,18 @@ function cascadeAnchors(seedUid, areaid, seedLocalId, areaName, now){
       const m = gexits.get(dir);
       if(m == null) continue;
       seen.add(target);
+      // The cascade is only as good as the two exit lists agreeing. Where they
+      // do not -- Gaardian recorded an exit the game no longer has, or the game
+      // grew one Gaardian never saw -- the two walks slip by a room and every
+      // anchor after that is wrong. The room name is the cheap check: we have
+      // stood in the live room, so we know what it is called, and Gaardian knows
+      // what room M is called. If they disagree, this is not room M.
+      //
+      // Seen in Wedded Bliss, where "Decorated Path" was anchored to Gaardian
+      // 124:2 "Comfrey Fountain". That severed the route to At the Band, and the
+      // walker paced between two rooms because from each of them the only route
+      // it could still see ran through the other.
+      if(!nameAgrees(target, areaid, m)) continue;
       if(anchoredLocalId(target, areaid) != null){
         // Already identified -- but "identified" and "merged" are different
         // things, and an anchor recorded without its promotion leaves the
@@ -973,6 +1029,34 @@ function putCandidates(uid, areaid, ids){
 
 function clearCandidates(uid){
   try { sqlDb.run('DELETE FROM room_candidates WHERE uid=?', [String(uid)]); } catch(e){}
+}
+
+/**
+ * Forget any identification the room's own name contradicts.
+ *
+ * An anchor records the Gaardian name it claimed at the time, and we know what
+ * the live room is actually called, so a disagreement is a plain contradiction:
+ * whatever produced it, this room is not that room. Dropping the anchor puts the
+ * room back to "unidentified", where the candidate machinery can work on it,
+ * instead of leaving a confident wrong answer that no later evidence overturns.
+ *
+ * Runs at load and is a no-op on a clean database.
+ */
+export function dropContradictedAnchors(){
+  if(!sqlDb) return 0;
+  try {
+    const r = sqlDb.exec(
+      `SELECT m.aardwolf_uid FROM room_gaardian_map m
+         JOIN rooms r ON r.uid = m.aardwolf_uid
+        WHERE m.gaardian_name IS NOT NULL AND TRIM(m.gaardian_name) <> ''
+          AND r.name IS NOT NULL AND TRIM(r.name) <> ''
+          AND LOWER(TRIM(r.name)) <> LOWER(TRIM(m.gaardian_name))`);
+    const uids = (r.length ? r[0].values : []).map(v => v[0]);
+    for(const u of uids){
+      sqlDb.run('DELETE FROM room_gaardian_map WHERE aardwolf_uid=?', [u]);
+    }
+    return uids.length;
+  } catch(e){ return 0; }
 }
 
 /**
