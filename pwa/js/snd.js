@@ -5,7 +5,7 @@ import { canonicalArea, findAreaAnywhere, gaardianDb, gaardianPath,
 import { currentRoom, charState, charLevel, hpFraction,
          STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
-import { findPath, planRoute, walkTo, cancelWalk, isWalking, lastGateInfo, clearGateInfo,
+import { findPath, planRoute, walkTo, cancelWalk, exploreTo, isWalking, lastGateInfo, clearGateInfo,
          walkToCoords } from './nav.js';
 import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
          parseRuntoNote, rememberEntryHint, entryHint, landmarkKeyword } from './areas.js';
@@ -458,6 +458,17 @@ export function gotoRoomUid(toUid, onDone, opts){
         appendOutput('[S&D] could not reach the target room (no runto keyword for '
           + area + ').\n','error');
       });
+      return;
+    }
+    // Already standing in the right area and still no route: the area is recorded
+    // as disconnected islands. The planes are the case -- each LAYER is a closed
+    // component and the link between them is an ordinary `u`/`d` that Gaardian
+    // never recorded. Probing takes those exits until the target is reachable,
+    // which is how the Twin Paradises layers were crossed by hand.
+    if(inArea && !(opts && opts.noProbe) && /no route|lost the route/i.test(String(reason||''))){
+      exploreTo(toUid,
+        onDone,
+        (why)=>{ appendOutput('[S&D] could not reach the target room ('+why+').\n','error'); });
       return;
     }
     appendOutput('[S&D] could not reach the target room ('+reason+').\n','error');
@@ -1110,7 +1121,17 @@ export function parseEntryItemOutput(text){
         if(sndState.pendingEntryItem !== st) return;
         const t = st.t;
         sndState.pendingEntryItem = null;
-        if(t && enterPoolFor(t)) return;
+        // Only if the amulet actually took us somewhere. A noportal room answers
+        // "Magic walls bounce you back" and leaves us standing where we were, and
+        // walking the corridor from there paced three rooms east up a city street
+        // in the Ruins of Diamond Reach before trying to enter a pool that was not
+        // there.
+        if(t && /astral/i.test(currentRoom.name || '') && enterPoolFor(t)) return;
+        if(t && poolIndexFor(t) && !/astral/i.test(currentRoom.name || '')){
+          appendOutput('[S&D] the amulet did not open here (this room blocks portals).\n'
+            + '       Move somewhere that allows them, then /xcp again.\n','error');
+          return;
+        }
         appendOutput('[S&D] you are in '+(currentRoom.name||'?')+' ['+(currentRoom.area||'?')+'].\n','quest');
       }, 4000);
       return;
@@ -1138,7 +1159,17 @@ export function parseEntryItemOutput(text){
           + '       can only be left from the room you arrived in.\n','quest');
         // The amulet lands on an Astral Plane, which is a corridor of pools rather
         // than the destination. Take the rest of the journey too.
-        if(t && enterPoolFor(t)) return;
+        // Only if the amulet actually took us somewhere. A noportal room answers
+        // "Magic walls bounce you back" and leaves us standing where we were, and
+        // walking the corridor from there paced three rooms east up a city street
+        // in the Ruins of Diamond Reach before trying to enter a pool that was not
+        // there.
+        if(t && /astral/i.test(currentRoom.name || '') && enterPoolFor(t)) return;
+        if(t && poolIndexFor(t) && !/astral/i.test(currentRoom.name || '')){
+          appendOutput('[S&D] the amulet did not open here (this room blocks portals).\n'
+            + '       Move somewhere that allows them, then /xcp again.\n','error');
+          return;
+        }
         appendOutput('[S&D] then /xcp again.\n','quest');
       }, 4000);
       return;

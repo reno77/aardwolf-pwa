@@ -281,7 +281,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-5.9';
+export const NAV_BUILD = 'nav-6.1';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -292,6 +292,78 @@ const MAX_RANDOM_STEPS = 40;
 let walk = null;   // {targetUid, path, expectUid, lastFrom, lastDir, repaths, timer, onDone, onFail, opened}
 
 export function isWalking(){ return !!walk; }
+
+// =============================================================================
+// PROBING FOR A ROUTE THAT THE MAP DOES NOT HAVE
+// =============================================================================
+// Some areas are recorded as several disconnected islands, because the links
+// between them are not exits Gaardian could record. The planes are the clearest
+// case: The Lower Planes and The Upper Planes are each a stack of LAYERS, every
+// layer a closed component of the reference map, and the way between them is an
+// ordinary `u` or `d` that simply is not in the data. Confirmed by hand in the
+// Twin Paradises, where `u` from the Shurrock layer landed on Dothion -- the map
+// had said "no route" between two rooms one step apart.
+//
+// GMCP publishes the exits of whatever room you are standing in, and the client
+// records an edge the first time one is walked. So the missing link is one move
+// away from being known: take exits the map has no edge for and check, after each,
+// whether the destination has become reachable. Bounded, because this is a walk
+// around a live area, not a search.
+const PROBE_BUDGET = 40;
+
+/** True when the map already holds an edge for `dir` out of `uid`. */
+function edgeKnown(uid, dir){
+  try {
+    const r = sqlDb.exec('SELECT 1 FROM exits WHERE from_uid=? AND dir=?', [String(uid), dir]);
+    return !!(r.length && r[0].values.length);
+  } catch(e){ return false; }
+}
+
+/**
+ * Walk about taking unmapped exits until `targetUid` becomes reachable.
+ *
+ * Untried exits are preferred, and `u`/`d` before the compass, because a layered
+ * area stacks vertically and that is where the missing link almost always is.
+ */
+export function exploreTo(targetUid, onDone, onFail, budget){
+  if(!sqlDb || !targetUid){ if(onFail) onFail('no map'); return; }
+  const limit = budget || PROBE_BUDGET;
+  const tried = new Set();
+  let moves = 0;
+
+  const step = () => {
+    const p = findPath(currentRoom.uid, targetUid);
+    if(p){
+      appendOutput('[nav] probing found a way through after ' + moves + ' move(s)\n','system');
+      walkTo(targetUid, onDone, onFail);
+      return;
+    }
+    if(moves >= limit){
+      if(onFail) onFail('probed ' + moves + ' room(s) without finding a route');
+      return;
+    }
+    const here = String(currentRoom.uid || '');
+    const exits = currentRoom.exits || [];
+    // u/d first: layers stack, and that is the link the data is missing.
+    const order = ['u', 'd', 'n', 'e', 's', 'w'];
+    const open = order.filter(d => exits.includes(d) && !tried.has(here + '|' + d));
+    // An exit with no edge in the map is the one that can teach us something.
+    const pick = open.find(d => !edgeKnown(here, d)) || open[0];
+    if(!pick){
+      if(onFail) onFail('nothing left to probe from ' + (currentRoom.name || 'here'));
+      return;
+    }
+    tried.add(here + '|' + pick);
+    moves++;
+    queueMove(pick, {fromWalker: true});
+    // Whether or not that moved us, look again: a refused exit is information too,
+    // and gmcp.js has recorded whatever the move taught us by now.
+    setTimeout(step, 1800);
+  };
+
+  appendOutput('[nav] no mapped route; probing exits for one (up to ' + limit + ' moves)\n','system');
+  step();
+}
 
 function clearStepTimer(){
   if(walk && walk.timer){ clearTimeout(walk.timer); walk.timer = null; }
