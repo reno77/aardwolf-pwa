@@ -48,6 +48,27 @@ for(const [f, s] of Object.entries(src)){
   }
 }
 
+// Every slash command the dispatcher accepts must be documented by /help, and
+// /help must not describe one that no longer exists. Stale help is worse than
+// none: it sends the player after a command that was renamed commits ago.
+{
+  // Comments stripped first: the comment on the help table itself mentions
+  // `cmd==='...'` and was duly reported as an undocumented command called "...".
+  const net = (src['net.js'] || '').replace(/^\s*\/\/.*$/gm, '');
+  const dispatched = new Set(
+    [...net.matchAll(/cmd\s*===\s*'([^']+)'/g)].map(m => m[1]));
+  // The help table lists each spelling in `cmds: [...]` entries.
+  const documented = new Set(
+    [...net.matchAll(/cmds:\s*\[([^\]]+)\]/g)]
+      .flatMap(m => [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1])));
+  for(const c of dispatched){
+    if(!documented.has(c)){ console.log(`UNDOCUMENTED COMMAND: /${c} is dispatched but /help does not list it`); bad++; }
+  }
+  for(const c of documented){
+    if(!dispatched.has(c)){ console.log(`HELP DESCRIBES NOTHING: /${c} is in /help but the dispatcher has no case for it`); bad++; }
+  }
+}
+
 // Control characters that are never meant to be in source. Tab and the two
 // newline bytes are legitimate; everything else below 0x20 is an escape that was
 // eaten somewhere between the editor and the file.

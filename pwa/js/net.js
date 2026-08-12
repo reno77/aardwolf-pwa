@@ -206,6 +206,97 @@ export function sendBlankLine(){
   ws.send(JSON.stringify({cmd:''}));
 }
 
+// =============================================================================
+// /help
+// =============================================================================
+// Every client command, with what it is for. This table is the documentation, and
+// tools/check_wiring.mjs compares it against the `cmd==='...'` tests in submitCmd
+// in both directions -- so a command cannot be added without being documented, and
+// help cannot describe one that no longer exists. Stale help is worse than none:
+// it sends the player looking for a command that was renamed three commits ago.
+//
+// `cmds` lists every spelling the dispatcher accepts; the first is the one shown.
+const HELP = [
+  ['Getting about', [
+    { cmds: ['runto', 'goto'], args: '<room name>', what: 'walk to a room by name, using the map' },
+    { cmds: ['navto'], args: '[uid|room name]', what: 'walk to a room by its game number (exact) or by name; no argument prints the number of the room you are in, which is how you note one for later' },
+    { cmds: ['navcoord'], args: '<x>,<y>', what: 'steer to a coordinate -- for continents and other areas the map does not cover, where every room reports its own position' },
+    { cmds: ['navdiag'], args: '[room name]', what: 'why can it not path there: client build, this room and its edges, what it has been identified as, and the route to the named room' },
+    { cmds: ['map'], args: '', what: 'the full-screen map' },
+    { cmds: ['rooms'], args: '', what: 'the rooms panel; tap one to walk there' },
+    { cmds: ['areas'], args: '', what: "ask the game for its real runto keyword list -- they are arbitrary ('kobaloi', 'tilule') and cannot be guessed from an area name" },
+    { cmds: ['ah'], args: '<mob>', what: "autohunt: follow the server's own hunt one step at a time. The way to cross an area the map cannot express" },
+  ]],
+  ['Campaigns', [
+    { cmds: ['xcp'], args: '<n|name>', what: 'go and kill campaign target n, counting only the ones still alive; a name works too and does not shift. /xcp 0 stops everything' },
+    { cmds: ['cpcheck', 'ccheck'], args: '', what: 'read cp check and rebuild the target list' },
+    { cmds: ['cpinfo', 'cinfo'], args: '', what: 'read cp info' },
+    { cmds: ['campaign'], args: '', what: 'the campaign panel' },
+    { cmds: ['xcpmode'], args: '<ch|qw>', what: 'how a target is located: campaign-hunt or where' },
+    { cmds: ['ht'], args: '[mob]', what: 'the hunt trick -- the copy that CANNOT be hunted is the campaign one' },
+    { cmds: ['qw'], args: '[mob]', what: 'quick where' },
+    { cmds: ['crr'], args: '', what: 'request a campaign (needs a questmaster)' },
+  ]],
+  ['Quests', [
+    { cmds: ['xq'], args: '', what: 'go and kill the current quest target' },
+    { cmds: ['quest', 'qinfo'], args: '', what: 'the quest target, and whether its room is in the map' },
+  ]],
+  ['Map sharing', [
+    { cmds: ['sync'], args: '', what: 'merge the learned map with the other clients through the relay' },
+    { cmds: ['syncstatus'], args: '', what: 'what the relay holds, and where this client has got to' },
+    { cmds: ['syncreset'], args: '', what: 'forget the watermarks; the next sync exchanges everything' },
+    { cmds: ['syncurl'], args: '[url|default]', what: 'where the relay is (the Android app needs this -- it has no relay of its own)' },
+    { cmds: ['synctoken'], args: '<value|off>', what: 'shared secret, if the relay is set up to require one' },
+  ]],
+  ['Kit and settings', [
+    { cmds: ['dinv'], args: '[args]', what: 'the inventory tool' },
+    { cmds: ['aliases'], args: '', what: 'the aliases panel' },
+    { cmds: ['triggers'], args: '', what: 'the triggers panel' },
+    { cmds: ['settings'], args: '', what: 'the settings panel' },
+    { cmds: ['recallseq'], args: '[sequence]', what: 'show or set the recall sequence -- the commands run before a runto' },
+    { cmds: ['export'], args: '', what: 'save the whole database to a file' },
+    { cmds: ['import'], args: '', what: 'load a database from a file' },
+  ]],
+  ['Housekeeping', [
+    { cmds: ['help', 'commands', '?'], args: '', what: 'this list' },
+    { cmds: ['clear'], args: '', what: 'clear the output' },
+    { cmds: ['buffer'], args: '<lines>', what: 'how much scrollback to keep' },
+    { cmds: ['lag'], args: '[rounds]', what: 'measure the round trip, split into transport and MUD, so it is clear which is slow' },
+  ]],
+];
+
+/** Every command spelling the help table documents. Read by check_wiring.mjs. */
+export function helpCommands(){
+  const out = [];
+  for(const [, items] of HELP) for(const it of items) out.push(...it.cmds);
+  return out;
+}
+
+function showHelp(){
+  appendOutput('\nAardClient commands -- everything below is typed with a leading /\n', 'system');
+  for(const [group, items] of HELP){
+    appendOutput('\n  ' + group + '\n', 'quest');
+    for(const it of items){
+      const name = '/' + it.cmds[0] + (it.args ? ' ' + it.args : '');
+      const also = it.cmds.length > 1 ? '  (also /' + it.cmds.slice(1).join(', /') + ')' : '';
+      // Wrap the description under a fixed gutter so the list stays readable on a
+      // phone, which is where it is most likely to be needed.
+      const gutter = 26;
+      const head = name.length < gutter ? name.padEnd(gutter) : name + '\n' + ' '.repeat(gutter);
+      const words = (it.what + also).split(' ');
+      let line = '', body = [];
+      for(const w of words){
+        if((line + ' ' + w).trim().length > 52){ body.push(line.trim()); line = w; }
+        else line += ' ' + w;
+      }
+      if(line.trim()) body.push(line.trim());
+      appendOutput('    ' + head + body[0] + '\n', 'system');
+      for(const extra of body.slice(1)) appendOutput('    ' + ' '.repeat(gutter) + extra + '\n', 'system');
+    }
+  }
+  appendOutput('\n', 'system');
+}
+
 export function submitCmd(){
   const el=document.getElementById('cmd-input');
   const text=el.value.trim();
@@ -227,6 +318,7 @@ export function submitCmd(){
   if(text.startsWith('/')){
     const parts=text.slice(1).split(' ');
     const cmd=parts[0].toLowerCase();
+    if(cmd==='help' || cmd==='commands' || cmd==='?'){ showHelp(); return; }
     if(cmd==='runto'){ doRunto(parts.slice(1).join(' ')); return; }
     if(cmd==='aliases'){ togglePanel('aliases'); return; }
     if(cmd==='triggers'){ togglePanel('triggers'); return; }

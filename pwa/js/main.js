@@ -50,6 +50,8 @@ initDb().then(()=>{
   appendOutput('All data stored in browser.\n','system');
   appendOutput('Swipe: rooms → aliases → triggers\n','system');
   appendOutput('Shortcut row: tap to send, hold to edit, + to add\n','system');
-  appendOutput('Commands: /runto, /aliases, /triggers, /rooms, /map, /cpinfo, /cpcheck, /xcp, /xcpmode, /ht, /qw, /export, /import, /sync\n','system');
-  appendOutput('Quests: /quest shows the target, /xq goes and kills it, /navto <room name> walks anywhere mapped\n','system');
+  // Deliberately not a list of commands. The banner used to name a dozen of them
+  // and had already fallen behind twice; /help is generated from the one table
+  // check_wiring.mjs holds to the dispatcher, so it cannot go stale.
+  appendOutput('Type /help for every command.\n','system');
 });
