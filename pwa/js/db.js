@@ -1227,53 +1227,76 @@ function gaardianIdsFor(uid){
  * are deliberately absent, because a reference route says which way to go and
  * nothing about which live room you will land in.
  */
+// The same weights nav.js applies, kept here rather than imported because nav.js
+// imports this module. A command exit is worth 8 plain steps: it may want an item
+// we are not carrying or a password the character was never told, which is a stall
+// with nothing to recover from, so take the walk unless it is genuinely long.
+const REF_CUSTOM_COST = 8;
+const REF_RANDOM_COST = 25;
+function refStepCost(dir, random){
+  return (random ? REF_RANDOM_COST : 0) + (String(dir).length > 1 ? REF_CUSTOM_COST : 1);
+}
+
 export function gaardianPath(fromUid, toUid, maxDepth){
   if(!gaardianDb) return null;
   const froms = gaardianIdsFor(fromUid);
   const tos = gaardianIdsFor(toUid);
   if(!froms.length || !tos.length) return null;
-  const depth = maxDepth || 200;
-  let best = null;
+  // A cost ceiling now, not a hop ceiling -- a 200-room walk still resolves and
+  // there is room for the command exits some areas genuinely require.
+  const depth = maxDepth || 400;
+  let best = null, bestCost = Infinity;
 
   for(const [fArea, fLocal] of froms){
     for(const [tArea, tLocal] of tos){
       if(fArea !== tArea) continue;            // one area at a time; runto crosses them
       if(fLocal === tLocal) return [];
-      // Backwards from the target, so the first time we reach the source we have
-      // the shortest route -- same shape as findPath.
+      // Backwards from the target, cheapest-first, so the first time we settle the
+      // source we have the cheapest route -- the same cost model findPath uses, and
+      // for the same reason. Hop-counting picked Kobold Siege Camp's `say glurpp`
+      // teleport over a walk three steps longer; this fallback would have gone on
+      // recommending it after findPath stopped.
       const cameFrom = new Map();              // local_id -> {dir, next}
-      let frontier = [tLocal];
-      const seen = new Set(frontier);
+      const best2 = new Map([[tLocal, 0]]);
+      const settled = new Set();
+      const buckets = new Map([[0, [tLocal]]]);
       let found = false;
-      for(let d = 0; d < depth && frontier.length && !found; d++){
-        const next = [];
+      for(let cost = 0; cost <= depth && !found; cost++){
+        const bucket = buckets.get(cost);
+        if(!bucket) continue;
+        buckets.delete(cost);
+        const frontier = bucket.filter(u => !settled.has(u) && best2.get(u) === cost);
+        for(const u of frontier) settled.add(u);
+        if(settled.has(fLocal)){ found = true; break; }
         for(const to of frontier){
           let rows = [];
           try {
-            // Random exits are usable, just preferred against -- the same policy
+            // Random exits are usable, just costed against -- the same policy
             // findPath applies. Excluding them would make The Goblin Fortress
             // unroutable all over again: its eight random exits are the ONLY link
             // between the entrance and the interior.
             const r = gaardianDb.exec(
-              `SELECT from_room, exit_type, exit_action FROM exits
+              `SELECT from_room, exit_type, exit_action, COALESCE(random,0) FROM exits
                 WHERE areaid=? AND to_room=?
                   AND (target_areaid IS NULL OR target_areaid=0 OR target_areaid=?)
-                ORDER BY COALESCE(random,0) ASC, exit_type ASC`,
+                ORDER BY exit_type ASC`,
               [fArea, to, fArea]);
             rows = r[0]?.values || [];
           } catch(e){ /* no rows */ }
-          for(const [from, type, action] of rows){
-            if(seen.has(from)) continue;
+          for(const [from, type, action, rnd] of rows){
+            if(settled.has(from)) continue;
             const dir = dirForExit(type, action);
             if(!dir) continue;
-            seen.add(from);
+            const next = cost + refStepCost(dir, rnd);
+            if(next > depth) continue;
+            const known = best2.get(from);
+            if(known !== undefined && known <= next) continue;
+            best2.set(from, next);
             cameFrom.set(from, {dir, next: to});
-            next.push(from);
-            if(from === fLocal){ found = true; break; }
+            if(!buckets.has(next)) buckets.set(next, []);
+            buckets.get(next).push(from);
           }
-          if(found) break;
         }
-        frontier = next;
       }
       if(!found) continue;
       const path = [];
@@ -1284,7 +1307,11 @@ export function gaardianPath(fromUid, toUid, maxDepth){
         path.push({dir: step.dir, uid: null, random: false});
         cur = step.next;
       }
-      if(cur === tLocal && (best === null || path.length < best.length)) best = path;
+      // Compare candidate pairings by cost, not hop count -- otherwise the choice
+      // between two possible identities for the same room reintroduces exactly the
+      // preference this function just stopped applying.
+      const cost = best2.get(fLocal);
+      if(cur === tLocal && cost !== undefined && cost < bestCost){ best = path; bestCost = cost; }
     }
   }
   return best;

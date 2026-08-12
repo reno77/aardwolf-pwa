@@ -185,9 +185,27 @@ Fortress:
 
 `nav.js` has one pathfinder and one walker. Do not add a second of either.
 
-- `findPath(from, to)` — breadth-first, searched **backwards from the
-  destination**, one indexed SQL frontier query per depth level.
-  `ORDER BY length(dir)` prefers a plain compass exit over a custom one.
+- `findPath(from, to)` — **cheapest**-first (Dijkstra), searched **backwards from
+  the destination**, one indexed SQL frontier query per cost level. The queue is
+  a bucket per cost, which is what keeps the batching: a per-node priority queue
+  would mean one SQL round trip per room. Weights: compass `1`, command exit `8`,
+  random `+25`.
+- **Why costs and not hops.** These are not distances — every exit is one room —
+  they are how much we would rather not use it. A command exit may want an item
+  you are not carrying or a password the character was never told, and a password
+  that does nothing is a stall with nothing to recover from. Kobold Siege Camp is
+  the case: the area entrance has four `say <password>` teleports deep into the
+  camp, so "A secluded corner" was 7 *hops* away via `say glurpp | leave tent |
+  n n n n e` but 10 plain steps away via `e e s e n n n n e e`. Breadth-first
+  counts hops, so the teleport won and the walker sat there saying "glurpp".
+  Three extra steps is a trade any player makes; hop-counting could not express
+  it. `gaardianPath` in db.js uses the same weights, and must keep doing so — it
+  is the fallback, so leaving it on hop-count means it goes on recommending the
+  route findPath just rejected.
+- Costs do **not** mean custom exits are avoided. Where one is the way, it still
+  wins: `gaardian:402:3` → Castle Vault is `say boomsplat | e | enter castle |
+  e | e`, and Inside a hollow tree is `enter tree`. What changed is that a
+  teleport no longer beats a walk that exists.
 - `walkTo(uid, onDone, onFail)` — sends one step, records `expectedUid`, and
   waits for the next GMCP `room.info` to confirm it. On a mismatch it corrects
   the offending edge (`UPDATE exits SET to_uid=...`) and re-paths.

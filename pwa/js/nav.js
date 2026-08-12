@@ -30,25 +30,56 @@ import { appendOutput } from './ui.js';
 // PATHFINDING
 // =============================================================================
 
-const MAX_DEPTH = 300;
 const MAX_FRONTIER = 4000;   // guard against pathological SQL parameter counts
+
+// What a step costs the search. These are not distances -- every exit is one room
+// -- they are how much we would rather not use it.
+//
+//   STEP    a compass direction. The thing we are counting.
+//   CUSTOM  a command to type. It might need an item we are not carrying, a door
+//           to open, or a password the character has not learned; the walker has
+//           a whole recovery path for those failures, which is the point -- they
+//           fail. Worth it only when it saves a real walk.
+//   RANDOM  the destination is one sample of where the exit went once, not a
+//           fact. Avoid unless there is nothing else.
+//
+// Kobold Siege Camp is why this exists. The area entrance has four `say <password>`
+// exits that teleport deep into the camp, and "A secluded corner" is 10 plain
+// steps away (e e s e n n n n e e) but only 7 HOPS through one of them:
+//
+//     say glurpp | leave tent | n n n n e
+//
+// Breadth-first counts hops, so the teleport won every time and the walker sat
+// there saying "glurpp" -- a password the character may never have been told, at
+// which point nothing moves and there is nothing to recover from. Three extra
+// steps is a trade any player would make; hop-counting could not express it.
+const STEP_COST   = 1;
+const CUSTOM_COST = 8;
+const RANDOM_COST = 25;
+// A compass walk of 300 rooms still resolves, with room to spare for the custom
+// exits an area like Diamond Soul Revelation genuinely requires.
+const MAX_COST = 600;
 
 function quoteList(items){ return items.map(()=>'?').join(','); }
 
+function stepCost(dir, random){
+  return (random ? RANDOM_COST : 0) + (isCustomExit(dir) ? CUSTOM_COST : STEP_COST);
+}
+
 /**
- * Shortest path from `fromUid` to `toUid` as [{dir, uid}, ...].
+ * Cheapest path from `fromUid` to `toUid` as [{dir, uid}, ...].
  *
- * Breadth-first, searched backwards from the destination: each round asks for
- * every exit that lands in the current frontier. That is one indexed query per
- * depth level rather than the old "SELECT everything FROM exits" on every
- * single step of every walk.
+ * Uniform-cost search (Dijkstra with the small integer weights above), run
+ * backwards from the destination: each round asks for every exit that lands in
+ * the current frontier, so this is still one indexed query per round rather than
+ * the old "SELECT everything FROM exits" on every step of every walk.
  *
- * Ties within a depth level are broken first against random exits (their to_uid
- * is one sample, not a fact) and then by `length(dir)`, so a plain compass exit
- * wins over a custom one -- typing 'n' is cheaper and safer than 'climb the
- * rickety ladder'. Note this only orders *equal-length* routes: a shorter route
- * through a random exit still beats a longer certain one, which would need a
- * weighted search rather than BFS.
+ * The queue is a bucket per cost. Weights are small integers, so ascending cost
+ * order comes for free and the batching survives -- a per-node priority queue
+ * would mean one SQL round trip per room, which is what the batched design exists
+ * to avoid. Settled nodes are filtered in JS rather than with `from_uid NOT IN
+ * (...)`: that list grew with the search and was bound for a parameter-count
+ * limit, and re-reading a few edges is cheaper than binding thousands of values.
  *
  * Returns null when no path exists, [] when already there.
  */
@@ -56,47 +87,60 @@ export function findPath(fromUid, toUid, opts){
   if(!sqlDb || !fromUid || !toUid) return null;
   if(fromUid === toUid) return [];
   const maxLevel = (opts && opts.level) || effectiveLevel();
+  const start = String(fromUid), goal = String(toUid);
 
-  let frontier = [String(toUid)];
-  const visited = new Set(frontier);
+  const buckets = new Map();      // cost -> [uid]
+  const best = new Map([[goal, 0]]);
+  const settled = new Set();
   // cameFrom[room] = {dir, next} : from `room`, go `dir` to reach `next`.
   const cameFrom = new Map();
+  buckets.set(0, [goal]);
 
-  for(let depth = 0; depth < MAX_DEPTH; depth++){
-    if(!frontier.length || frontier.length > MAX_FRONTIER) break;
-    const seen = [...visited];
+  const rebuild = () => {
+    const path = [];
+    let cur = start;
+    while(cur !== goal){
+      const step = cameFrom.get(cur);
+      if(!step) return null;
+      path.push({dir: step.dir, uid: step.next, random: step.random});
+      cur = step.next;
+    }
+    return path;
+  };
+
+  for(let cost = 0; cost <= MAX_COST; cost++){
+    const bucket = buckets.get(cost);
+    if(!bucket) continue;
+    buckets.delete(cost);
+    // A node can sit in several buckets; only the first one to come up is final.
+    const frontier = bucket.filter(u => !settled.has(u) && best.get(u) === cost);
+    if(!frontier.length) continue;
+    for(const u of frontier) settled.add(u);
+    // Reached at its cheapest -- and because costs come up in order, cheapest
+    // overall.
+    if(settled.has(start)) return rebuild();
+    if(frontier.length > MAX_FRONTIER) break;
+
     const res = sqlDb.exec(
       `SELECT from_uid, dir, to_uid, COALESCE(random,0) FROM exits
         WHERE to_uid IN (${quoteList(frontier)})
-          AND from_uid NOT IN (${quoteList(seen)})
           AND level <= ?
-        ORDER BY COALESCE(random,0) ASC, length(dir) ASC`,
-      [...frontier, ...seen, maxLevel]);
-    const rows = res[0]?.values || [];
-    if(!rows.length) return null;
-
-    const next = [];
-    for(const [f, dir, t, rnd] of rows){
-      if(visited.has(f)) continue;      // first row wins: shortest, then certain, then shortest dir
-      visited.add(f);
-      cameFrom.set(f, {dir, next: t, random: !!rnd});
-      next.push(f);
-      if(f === String(fromUid)){
-        // Walk the chain forwards to build the route.
-        const path = [];
-        let cur = String(fromUid);
-        while(cur !== String(toUid)){
-          const step = cameFrom.get(cur);
-          if(!step) return null;
-          path.push({dir: step.dir, uid: step.next, random: step.random});
-          cur = step.next;
-        }
-        return path;
-      }
+        ORDER BY length(dir) ASC`,
+      [...frontier, maxLevel]);
+    for(const [f, dir, t, rnd] of (res[0]?.values || [])){
+      const from = String(f);
+      if(settled.has(from)) continue;
+      const next = cost + stepCost(dir, rnd);
+      if(next > MAX_COST) continue;
+      const known = best.get(from);
+      if(known !== undefined && known <= next) continue;
+      best.set(from, next);
+      cameFrom.set(from, {dir, next: String(t), random: !!rnd});
+      if(!buckets.has(next)) buckets.set(next, []);
+      buckets.get(next).push(from);
     }
-    frontier = next;
   }
-  return null;
+  return settled.has(start) ? rebuild() : null;
 }
 
 /** True when `dir` is a command to type rather than a compass direction. */
@@ -211,7 +255,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-4.8';
+export const NAV_BUILD = 'nav-4.9';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
