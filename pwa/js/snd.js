@@ -898,6 +898,76 @@ const CARRYING = /^you are carrying:/im;
 const NOT_CARRYING = /nothing with name or keyword|you do not have that|^you (?:do not|don'?t) have/im;
 const HELD_OK = /you (?:hold|are now holding|wield)/im;
 
+// =============================================================================
+// THE ASTRAL POOLS
+// =============================================================================
+// The Amulet of the Planes does not put you in a plane -- it puts you on an
+// Astral Plane, a one-room-wide corridor of pools, and the pool you walk to
+// decides which plane you end up in. `look pools` in the first room prints the
+// list, and the pools sit in that order going east:
+//
+//        1) Gladsheim        6)  Twin Paradises   11) Beastlands
+//        2) Pandemonium      7)  Arcadia          12) Realm of the Zodiac
+//        3) Hades            8)  Seven Heavens    13) Thandeld's Conflict
+//        4) Gehenna          9)  Swordbreaker's Hoard  14) Nine Hells
+//        5) Acheron          10) Elysium
+//
+// so pool N is N rooms east of the note room, and `enter pool` uses it. That is
+// the whole mechanism, and it was the missing half of "reached with the Amulet of
+// the Planes": the helper handed over an amulet, announced the Astral Plane and
+// stopped, leaving the actual travel to be typed by hand -- twice in one session,
+// once for the Twin Paradises and once for Hades.
+//
+// Aardwolf calls the areas "The Upper Planes" / "The Lower Planes", and the plane
+// a target sits in has to be read from the ROOM name, which names its layer:
+// "On the Pluton Gloom of Hades", "On the Dothion layer of the Twin Paradises".
+const POOL_ORDER = ['gladsheim', 'pandemonium', 'hades', 'gehenna', 'acheron',
+                    'twin paradises', 'arcadia', 'seven heavens',
+                    "swordbreaker's hoard", 'elysium', 'beastlands',
+                    'realm of the zodiac', "thandeld's conflict", 'nine hells'];
+
+/** Which pool leads to this target, from its room name, or 0 if none does. */
+export function poolIndexFor(t){
+  const hay = ((t && (t.roomName || t.loc)) || '').toLowerCase();
+  if(!hay) return 0;
+  // Longest name first so "seven heavens" is not shadowed by a shorter match.
+  const byLength = POOL_ORDER.map((n, i) => [n, i + 1]).sort((a, b) => b[0].length - a[0].length);
+  for(const [name, n] of byLength) if(hay.includes(name)) return n;
+  return 0;
+}
+
+/**
+ * Walk the astral corridor to the target's pool and step into it.
+ *
+ * Returns false when the target is not in a plane we can identify, so the caller
+ * can fall back to telling the player where they are.
+ */
+function enterPoolFor(t){
+  const n = poolIndexFor(t);
+  if(!n) return false;
+  appendOutput('[S&D] '+(t.roomName || t.areaName)+' is through pool '+n
+    + '; walking the astral corridor.\n','quest');
+  let step = 0;
+  const walk = () => {
+    if(sndState.pendingXcp !== t) return;            // target changed under us
+    if(step < n){
+      step++;
+      sendCmdRaw('e');
+      setTimeout(walk, 1600);
+      return;
+    }
+    sendCmdRaw('enter pool');
+    setTimeout(()=>{
+      if(sndState.pendingXcp !== t) return;
+      appendOutput('[S&D] arrived in '+(currentRoom.name||'?')+' ['+(currentRoom.area||'?')+'].\n','quest');
+      t.recallSent = true;      // we are in the plane; do not recall back out
+      xcpStep(t);
+    }, 3500);
+  };
+  setTimeout(walk, 1200);
+  return true;
+}
+
 /** Feed MUD output here while an entry item is being readied. */
 export function parseEntryItemOutput(text){
   const st = sndState.pendingEntryItem;
@@ -916,6 +986,25 @@ export function parseEntryItemOutput(text){
         sendCmdRaw('i '+st.kw);
         return;
       }
+      // `i` lists INVENTORY, and a held portal is not in inventory -- it is in the
+      // hand. So "not carrying" is not proof of absence: standing on the Astral
+      // Plane with the amulet already held, this reported the amulet missing and
+      // abandoned the target. Check the equipment before believing it.
+      if(!st.checkedEq){
+        st.checkedEq = true;
+        st.stage = 'eq';
+        st.ts = Date.now();
+        sendCmdRaw('eq');
+        // The listing runs to a couple of dozen lines across several chunks, so
+        // give it time and let the timer decide, not a line of the listing.
+        setTimeout(()=>{
+          if(sndState.pendingEntryItem !== st || st.stage !== 'eq') return;
+          sndState.pendingEntryItem = null;
+          appendOutput('[S&D] you do not have '+st.item+', which is how you reach '
+            + st.areaName + '. '+(st.note||'')+'\n','error');
+        }, 5000);
+        return;
+      }
       sndState.pendingEntryItem = null;
       appendOutput('[S&D] you are not carrying '+st.item+', which is how you reach '
         + st.areaName + '. '+(st.note||'')+'\n','error');
@@ -930,6 +1019,33 @@ export function parseEntryItemOutput(text){
     }
     return;
   }
+  if(st.stage === 'eq'){
+    // Held already? Then there is nothing to hold and we can use it straight away.
+    // Match on any word of the item name, since `eq` prints the full item and the
+    // hint gives a title ("Amulet of the Planes" vs "the amulet of the planes").
+    const words = String(st.item||'').toLowerCase().split(/\s+/)
+      .filter(w => w.length > 3 && !/^(the|of|and)$/.test(w));
+    const hit = words.length && words.every(w => clean.toLowerCase().includes(w));
+    if(hit){
+      st.stage = 'enter';
+      st.ts = Date.now();
+      appendOutput('[S&D] '+st.item+' is already in hand; using it.\n','quest');
+      sendCmdRaw('enter');
+      setTimeout(()=>{
+        if(sndState.pendingEntryItem !== st) return;
+        const t = st.t;
+        sndState.pendingEntryItem = null;
+        if(t && enterPoolFor(t)) return;
+        appendOutput('[S&D] you are in '+(currentRoom.name||'?')+' ['+(currentRoom.area||'?')+'].\n','quest');
+      }, 4000);
+      return;
+    }
+    // Do NOT conclude "missing" from a line of the eq listing. "You are using:" is
+    // its HEADER and arrives in an earlier chunk than the item, so testing for it
+    // declared the amulet absent while it was sitting in the Held slot two chunks
+    // later. The verdict belongs to the timer armed when this stage started.
+    return;
+  }
   if(st.stage === 'hold'){
     // "You do not have that item" here means it is already held, not missing --
     // holding moves it out of inventory into the hand slot.
@@ -940,10 +1056,15 @@ export function parseEntryItemOutput(text){
       sendCmdRaw('enter');
       setTimeout(()=>{
         if(sndState.pendingEntryItem !== st) return;
+        const t = st.t;
         sndState.pendingEntryItem = null;
         appendOutput('[S&D] you are in '+(currentRoom.name||'?')+' ['+(currentRoom.area||'?')+'].'
           + ' /navto ' + (currentRoom.uid||'?') + ' comes back here -- note it, some planes\n'
-          + '       can only be left from the room you arrived in. Then /xcp again.\n','quest');
+          + '       can only be left from the room you arrived in.\n','quest');
+        // The amulet lands on an Astral Plane, which is a corridor of pools rather
+        // than the destination. Take the rest of the journey too.
+        if(t && enterPoolFor(t)) return;
+        appendOutput('[S&D] then /xcp again.\n','quest');
       }, 4000);
       return;
     }
