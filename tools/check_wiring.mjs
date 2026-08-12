@@ -1,6 +1,14 @@
-// Two checks the client had no way of catching, both of which bit today:
+// Three checks the client had no way of catching, all of which bit in practice:
 //   1. an import naming something the module does not export  (would throw)
 //   2. an exported output parser that nothing ever calls       (silently dead)
+//   3. a control character in the source                       (silently dead)
+//
+// (3) needs explaining. Editing a file through a shell heredoc turns `\b` in a
+// regex into a literal backspace byte, so `/\bwear\s+wpn\s+2\b/` ships as
+// `/<BS>wear\s+wpn\s+2<BS>/` and can never match anything. It is valid
+// JavaScript, `node --check` passes, and the regex is simply always false. Two
+// were found in the tree this way -- one in snd.js that had never once repaired
+// the recall sequence it was written for, and one nearly shipped in db.js.
 import { readdirSync, readFileSync } from 'node:fs';
 
 const dir = 'D:/projects/aardwolf-pwa/pwa/js';
@@ -40,4 +48,21 @@ for(const [f, s] of Object.entries(src)){
   }
 }
 
-console.log(bad ? `\n${bad} problem(s)` : `\n${files.length} modules: imports resolve and every output parser is dispatched`);
+// Control characters that are never meant to be in source. Tab and the two
+// newline bytes are legitimate; everything else below 0x20 is an escape that was
+// eaten somewhere between the editor and the file.
+const ALLOWED_CTRL = new Set([0x09, 0x0a, 0x0d]);
+for(const f of files){
+  const buf = readFileSync(dir + '/' + f);
+  for(let i = 0; i < buf.length; i++){
+    const c = buf[i];
+    if(c >= 0x20 || ALLOWED_CTRL.has(c)) continue;
+    const line = buf.subarray(0, i).toString('utf8').split('\n').length;
+    console.log(`CONTROL CHARACTER 0x${c.toString(16).padStart(2, '0')}: ${f}:${line}`
+      + ` -- almost certainly a regex \\b or \\f eaten by a shell heredoc`);
+    bad++;
+    break;                                   // one report per file is enough
+  }
+}
+
+console.log(bad ? `\n${bad} problem(s)` : `\n${files.length} modules: imports resolve, every output parser is dispatched, no stray control characters`);

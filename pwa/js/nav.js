@@ -56,14 +56,40 @@ const MAX_FRONTIER = 4000;   // guard against pathological SQL parameter counts
 const STEP_COST   = 1;
 const CUSTOM_COST = 8;
 const RANDOM_COST = 25;
+// Speech is its own, worse category, and 8 was not enough. In Nenukon the
+// campaign mob sat in A Campsite, two hops away as `say lynx | s` (cost 9) and
+// ten plain steps away by road (cost 10) -- so the password won by one point, the
+// character had never been told it, and the walk fell apart. See SPEECH below for
+// why these are worth avoiding rather than merely costing: they fail SILENTLY.
+const SPEECH_COST = 40;
 // A compass walk of 300 rooms still resolves, with room to spare for the custom
 // exits an area like Diamond Soul Revelation genuinely requires.
 const MAX_COST = 600;
 
 function quoteList(items){ return items.map(()=>'?').join(','); }
 
+/**
+ * An exit whose command is a spoken password.
+ *
+ * 182 of them across 53 areas, and every single one is recorded as a MOVE -- not
+ * one is a prerequisite. That matters twice over:
+ *
+ *  - The password is area-quest knowledge the character may never have been told,
+ *    and saying a word you have not learned does exactly nothing.
+ *  - It fails SILENTLY. Every other blocked exit says something the walker can
+ *    read -- "The door is locked.", "You cannot go that way." -- but a failed
+ *    password just prints you saying a word, so there is no failure to detect and
+ *    no message to react to.
+ *
+ * So they are costed near-last-resort, and treated as movement-only below.
+ */
+function isSpeechExit(dir){ return /^say\b/i.test(String(dir || '')); }
+
 function stepCost(dir, random){
-  return (random ? RANDOM_COST : 0) + (isCustomExit(dir) ? CUSTOM_COST : STEP_COST);
+  const base = !isCustomExit(dir) ? STEP_COST
+             : isSpeechExit(dir)  ? SPEECH_COST
+             : CUSTOM_COST;
+  return (random ? RANDOM_COST : 0) + base;
 }
 
 /**
@@ -255,7 +281,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-4.9';
+export const NAV_BUILD = 'nav-5.0';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -509,6 +535,34 @@ function step(){
     // AFTER them is the move. Waiting for a room change that was never coming
     // timed the walk out in The Castle of Knossos with the pass already handed
     // over, two steps short of the Senate.
+    // ...but a spoken password is never a prerequisite (see isSpeechExit: all 182
+    // of them are movements), so if it did not move us it FAILED -- the character
+    // has not been told that word. Carrying on is then actively destructive: the
+    // rest of the plan is a route out of the room we were supposed to arrive in,
+    // and walking it from where we actually are made the walker "correct" six
+    // perfectly good edges in Nenukon before giving up.
+    //
+    // Mark the exit unroutable for this character with the level=999 marker the
+    // map already uses for exits we cannot pass, and re-path from here.
+    if(isCustomExit(walk.lastDir) && isSpeechExit(walk.lastDir)){
+      if(walk.lastFrom){
+        try {
+          sqlDb.run('UPDATE exits SET level=999 WHERE from_uid=? AND dir=?',
+            [walk.lastFrom, walk.lastDir]);
+        } catch(e){ console.error(e); }
+      }
+      appendOutput('[nav] "' + walk.lastDir + '" did nothing -- that password has not been\n'
+        + '      learned, so it is not a way through for you. Routing around it.\n', 'system');
+      if(++walk.repaths <= MAX_REPATH){
+        walk.plan = null;
+        walk.blind = false;
+        clearStepTimer();
+        walk.timer = setTimeout(step, 600);
+        return;
+      }
+      finish(false, 'no route that avoids "' + walk.lastDir + '"');
+      return;
+    }
     if(isCustomExit(walk.lastDir)){
       walk.done = walk.done || new Set();
       walk.done.add(walk.lastFrom + '|' + walk.lastDir);

@@ -1233,8 +1233,14 @@ function gaardianIdsFor(uid){
 // with nothing to recover from, so take the walk unless it is genuinely long.
 const REF_CUSTOM_COST = 8;
 const REF_RANDOM_COST = 25;
+// A spoken password is near-last-resort: it needs area-quest knowledge the
+// character may never have been told, and it fails silently, so there is nothing
+// for the walker to react to. See isSpeechExit in nav.js.
+const REF_SPEECH_COST = 40;
 function refStepCost(dir, random){
-  return (random ? REF_RANDOM_COST : 0) + (String(dir).length > 1 ? REF_CUSTOM_COST : 1);
+  const d = String(dir);
+  const base = d.length <= 1 ? 1 : (/^say\b/i.test(d) ? REF_SPEECH_COST : REF_CUSTOM_COST);
+  return (random ? REF_RANDOM_COST : 0) + base;
 }
 
 export function gaardianPath(fromUid, toUid, maxDepth){

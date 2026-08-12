@@ -20,7 +20,7 @@ export let sndState={cpType:'none', cpLevel:0, xcpIndex:0, xcpMode:localStorage.
 /** Repair a stored sequence that carries the `wear wpn 2` typo. */
 function fixStoredRecall(seq){
   if(!seq) return seq;
-  const fixed = seq.replace(/wear\s+wpn\s+2/gi, 'wear wpn2');
+  const fixed = seq.replace(/\bwear\s+wpn\s+2\b/gi, 'wear wpn2');
   if(fixed !== seq){
     try { localStorage.setItem('recall_sequence', fixed); } catch(e){ /* not fatal */ }
   }
@@ -367,13 +367,41 @@ export function gotoRoomUid(toUid, onDone, opts){
     const inArea=currentRoom.area && area && areaNameMatches(currentRoom.area, area);
     if(area && !inArea && !(opts && opts.noAreaHop)){
       appendOutput('[S&D] no mapped route from '+(currentRoom.area||'here')+' to '+area
-        +' -- using the server\'s runto to reach the area first.\n','quest');
-      if(runtoArea(area)){
-        awaitAreaThen(area, ()=>gotoRoomUid(toUid, onDone, {noAreaHop:true}));
-        return;
-      }
+        +' -- recalling, then using the server\'s runto to reach the area.\n','quest');
+      // Recall FIRST. `runto` only works from the Grand City of Aylor -- the game
+      // answers "You need to be at the Grand City of Aylor (recall) to use runto."
+      // from anywhere else -- and this path fired it from wherever the walk had
+      // broken down. Seen chasing the Fox Champion: a random exit in Nenukon
+      // carried the character into Alagh, this fallback said `runto nenukon` on
+      // the spot, and the game refused it. The main travel path in xcpStep has
+      // always recalled first; this one simply forgot to.
+      xcpRecall(sndState.pendingXcp, ()=>{
+        if(runtoArea(area)){
+          awaitAreaThen(area, ()=>gotoRoomUid(toUid, onDone, {noAreaHop:true}));
+          return;
+        }
+        appendOutput('[S&D] could not reach the target room (no runto keyword for '
+          + area + ').\n','error');
+      });
+      return;
     }
     appendOutput('[S&D] could not reach the target room ('+reason+').\n','error');
+    // Getting lost among random exits is not a transient failure -- the area does
+    // not have a route we can express, and trying again does the same thing. Give
+    // up on THIS target so nothing upstream recalls, runs back and wanders again.
+    //
+    // Nenukon and the Far Country is the case: the game reports every exit from
+    // "Entering the Nenukon" with destination -1, meaning it will not say where you
+    // land, and it scatters you across the continent (Alagh, Kherashin, the Great
+    // Eastern Desert all turned up). The intended way in is a spoken tribe name,
+    // and `say lynx` / `say bear` both do nothing for a character who has not done
+    // the area quest -- so for that character there is no route at all.
+    if(/still lost|somewhere unexpected/i.test(String(reason || ''))){
+      const t = sndState.pendingXcp;
+      appendOutput('[S&D] that area moves you around unpredictably, so there is no route\n'
+        + '      to plan. Get in yourself and /xcp again from inside.\n','quest');
+      if(t) xcpAbandonTarget(t, 'lost in random exits');
+    }
   }, opts);
 }
 
