@@ -593,7 +593,17 @@ export function buildCpTargets(infoList){
     const areaUid=resolveAreaUid(v.loc);
     if(areaUid){ areaCount++; tmp.push({...v, type:'area', areaName:areaUid, areaUid:areaUid}); }
     else {
-      const room=resolveRoomByName(v.loc);
+      // A location that is neither a known area nor a room we have walked is very
+      // often a room in the REFERENCE map -- one campaign gave "Green lawns",
+      // "Parlour", "Before the Prison", "Before the Baron's Manor" and "An aerial
+      // street", none of which are areas and none of which had been visited. They
+      // were filed as type 'unknown' with areaName set to the room name, so travel
+      // looked for a runto keyword called "Green lawns", found none, and every one
+      // of those targets had to be walked to by hand.
+      //
+      // resolveRoomByNameAnywhere imports the area from gaardian_maps.db and hands
+      // back the room, so the target gets its real area name and becomes routable.
+      const room=resolveRoomByName(v.loc) || resolveRoomByNameAnywhere(v.loc);
       if(room){ roomCount++; tmp.push({...v, type:'room', roomUid:room.uid, roomName:room.name, areaName:room.area, areaUid:room.area}); }
       else { areaCount++; tmp.push({...v, type:'unknown', areaName:v.loc, areaUid:null}); }
     }
@@ -623,7 +633,17 @@ export function buildCpTargetsFromCheck(checkList){
     const areaUid=resolveAreaUid(v.loc);
     if(areaUid){ areaCount++; tmp.push({...v, type:'area', areaName:areaUid, areaUid:areaUid}); }
     else {
-      const room=resolveRoomByName(v.loc);
+      // A location that is neither a known area nor a room we have walked is very
+      // often a room in the REFERENCE map -- one campaign gave "Green lawns",
+      // "Parlour", "Before the Prison", "Before the Baron's Manor" and "An aerial
+      // street", none of which are areas and none of which had been visited. They
+      // were filed as type 'unknown' with areaName set to the room name, so travel
+      // looked for a runto keyword called "Green lawns", found none, and every one
+      // of those targets had to be walked to by hand.
+      //
+      // resolveRoomByNameAnywhere imports the area from gaardian_maps.db and hands
+      // back the room, so the target gets its real area name and becomes routable.
+      const room=resolveRoomByName(v.loc) || resolveRoomByNameAnywhere(v.loc);
       if(room){ roomCount++; tmp.push({...v, type:'room', roomUid:room.uid, roomName:room.name, areaName:room.area, areaUid:room.area}); }
       else { areaCount++; tmp.push({...v, type:'unknown', areaName:v.loc, areaUid:null}); }
     }
@@ -2499,13 +2519,24 @@ export function xcpKillTarget(t, forcedKw, onStillAlive){
   // The ordinal walk below is the fallback for when identification was not
   // possible -- it kills copies in turn rather than the same one every time.
   const ct = campaignTargets[t.index-1] || t;
-  const seen = (t.whereInstances && t.whereInstances.length) || 1;
+  // How many copies `where` actually reported. 0 means it never told us, in which
+  // case 8 is a guess wide enough for the Knossos Senate's six senators.
+  //
+  // The cap used to be Math.max(seen, 8) unconditionally, so a target `where`
+  // had reported EXACTLY ONE of still got walked up to eight ordinals -- and the
+  // second attempt on Polaf den Tedra announced "kill 2.tedra -- copy 2 of 1" and
+  // asked the game for a copy the code already knew did not exist. Once the count
+  // is known, honour it: retries then re-attack the one copy, which is what makes
+  // a mob that fled at wimpy die on the next pass.
+  const known = (t.whereInstances && t.whereInstances.length) || 0;
+  const cap = known > 0 ? known : 8;
   let targetKw = forcedKw;
   if(!targetKw){
     ct.killOrd = (ct.killOrd || 0) + 1;
-    if(ct.killOrd > Math.max(seen, 8)) ct.killOrd = 1;   // wrap rather than run away
+    if(ct.killOrd > cap) ct.killOrd = 1;                 // wrap rather than run away
     targetKw = ct.killOrd > 1 ? ct.killOrd + '.' + kw : kw;
   }
+  const seen = known || 1;
   appendOutput('[S&D] killing '+t.mob+' (kill '+targetKw+')'
     + (forcedKw ? ' -- the copy that refused to be hunted'
                 : (ct.killOrd > 1 ? ' -- copy '+ct.killOrd+' of '+seen : '')) + '...\n','quest');
