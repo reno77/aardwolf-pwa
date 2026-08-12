@@ -1422,7 +1422,9 @@ export function parseIdentifyOutput(text){
     if(st.timer) clearTimeout(st.timer);
     sndState.pendingIdentify = null;
     appendOutput('[S&D] copy '+st.ord+' cannot be hunted -- that is the campaign mob.\n','quest');
-    st.t.huntOrdKw = ordKw;          // the exact copy, for the kill
+    // Kept for `where`, which shares hunt's numbering. NOT for `kill`, which
+    // counts only this room -- see onArriveAtInstance.
+    st.t.huntOrdKw = ordKw;
     if(st.then === 'locate'){
       // help/HuntTrick: ask `where` the same ordinal to find which room it is in.
       appendOutput('[S&D] locating it (where '+ordKw+')...\n','quest');
@@ -1430,7 +1432,10 @@ export function parseIdentifyOutput(text){
       sendCmd('where '+ordKw);
       return;
     }
-    xcpKillTarget(st.t, ordKw);
+    // Plain keyword, not ordKw: we are standing in the room, and the room's own
+    // numbering is the only one `kill` understands. If several copies are here the
+    // ordinal walk in xcpKillTarget works through them across retries.
+    xcpKillTarget(st.t);
     return;
   }
   if(HUNT_IS_HERE.test(clean) || HUNT_DIRECTION.test(clean)){
@@ -2354,8 +2359,22 @@ export function xcpContinueHuntTrick(t, inst){
  * told apart, and this is the only place `hunt` can do it.
  */
 function onArriveAtInstance(t){
-  // Already identified by the hunt trick before we set off: kill that exact copy.
-  if(t.huntOrdKw){ xcpKillTarget(t, t.huntOrdKw); return; }
+  // `t.huntOrdKw` is a HUNT ordinal, and hunt counts every copy in the AREA while
+  // kill counts only the ones in this ROOM. They are different lists, so handing
+  // it to kill asks for a copy that is very often not here:
+  //
+  //     [S&D] copy 2 cannot be hunted -- that is the campaign mob.
+  //     > kill 2.militia
+  //     They aren't here.
+  //
+  // and the walker then swept all seven rooms called "A Road through the
+  // Countryside" looking for a mob standing in front of it. The ordinal is still
+  // right for `where` -- which is what placed us in this room -- but from here on
+  // the room's own numbering is the only one that means anything, so fall through
+  // to the ordinal walk in xcpKillTarget.
+  //
+  // (Not the same as the `where` vs `hunt` numbering question: those two agree for
+  // a clean keyword. This is hunt vs kill.)
   // The in-area probe already tested every copy hunt can see; repeating it here
   // would ask the same questions and get the same answers.
   const many = (t.whereInstances && t.whereInstances.length > 1);
