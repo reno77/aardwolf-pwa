@@ -281,13 +281,16 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-6.2';
+export const NAV_BUILD = 'nav-6.3';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
 // A maze is crossed by trying and re-trying, so random exits get their own,
 // much larger budget rather than spending the re-path one on the first corner.
 const MAX_RANDOM_STEPS = 40;
+// How often one walk may enter the same room before it is a loop rather than a
+// route. Four, not two: a long legitimate route can cross a hub twice.
+const MAX_ROOM_VISITS = 4;
 
 let walk = null;   // {targetUid, path, expectUid, lastFrom, lastDir, repaths, timer, onDone, onFail, opened}
 
@@ -310,6 +313,11 @@ export function isWalking(){ return !!walk; }
 // whether the destination has become reachable. Bounded, because this is a walk
 // around a live area, not a search.
 const PROBE_BUDGET = 40;
+// How many times a probe may try a route the map offers before concluding the map
+// is not going to produce a usable one. Each failed attempt teaches the walker
+// something (a deleted edge, a level=999 marker), so a few are worth having --
+// but not unboundedly, or a maze becomes an infinite walk.
+const MAX_PROBE_WALKS = 4;
 
 /** True when the map already holds an edge for `dir` out of `uid`. */
 function edgeKnown(uid, dir){
@@ -329,13 +337,25 @@ export function exploreTo(targetUid, onDone, onFail, budget){
   if(!sqlDb || !targetUid){ if(onFail) onFail('no map'); return; }
   const limit = budget || PROBE_BUDGET;
   const tried = new Set();
-  let moves = 0;
+  let moves = 0, walks = 0;
 
   const step = () => {
     const p = findPath(currentRoom.uid, targetUid);
     if(p){
       appendOutput('[nav] probing found a way through after ' + moves + ' move(s)\n','system');
-      walkTo(targetUid, onDone, onFail);
+      walks++;
+      walkTo(targetUid, onDone, (why)=>{
+        // The route the map offered was not walkable after all -- a door we cannot
+        // open, an item we do not carry, a maze that loops. Giving up here defeats
+        // the purpose of being in this function: keep probing, because the walker
+        // has just marked whatever blocked it and the next search will avoid it.
+        if(walks >= MAX_PROBE_WALKS || moves >= limit){
+          if(onFail) onFail(why);
+          return;
+        }
+        appendOutput('[nav] that route did not work (' + why + '); still probing\n','system');
+        setTimeout(step, 900);
+      });
       return;
     }
     if(moves >= limit){
@@ -667,6 +687,30 @@ export function onRoomChanged(){
   if(currentRoom.uid === walk.targetUid){ finish(true); return; }
   if(walk.targetName && String(currentRoom.name||'').toLowerCase() === walk.targetName){
     finish(true); return;
+  }
+
+  // Going in circles.
+  //
+  // Some areas are mazes that hand you back the room you just left, and the
+  // reference map records their rooms as ordinary ones -- so a route straight
+  // through the middle looks perfectly good. The Diamond Mines say it out loud:
+  // "The tunnel continues on for many miles ... You begin to think the tunnels are
+  // running you around in circles." The walker ground through that maze taking
+  // damage until the character died at 1hp, having been sent down a nineteen-step
+  // "walk" that does not actually go anywhere.
+  //
+  // Counting visits per room catches both shapes: a maze that returns the same uid
+  // and one whose rooms are distinct but keep recurring. Deliberately generous,
+  // because a legitimate long route can cross a hub more than once.
+  if(currentRoom.uid){
+    walk.visits = walk.visits || new Map();
+    const seen = (walk.visits.get(currentRoom.uid) || 0) + 1;
+    walk.visits.set(currentRoom.uid, seen);
+    if(seen >= MAX_ROOM_VISITS){
+      finish(false, 'going in circles in ' + (currentRoom.name || 'this area')
+        + ' (' + seen + ' visits to the same room)');
+      return;
+    }
   }
 
   // While following a planned route through rooms the map does not know by uid,
