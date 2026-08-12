@@ -1007,7 +1007,31 @@ export function followEntryHint(t, hint){
     sendCmd(RUNTO + bridge.key);
     awaitAreaThen(hint.area, ()=>{
       walkToCoords(hint.x, hint.y, ()=>{
-        // Standing on the coordinate. The landmark is the way in.
+        // Standing on the coordinate. Before guessing a command from the landmark
+        // name, ask the map: the way in is an ordinary exit once it has been walked
+        // even once, and GMCP records it the first time. Zenith Trail leads UP into
+        // Before the Keep -- `enter trail`, which the landmark name suggests, is
+        // simply wrong, and guessing it looped the whole journey.
+        if(t.roomUid){
+          const p = findPath(currentRoom.uid, t.roomUid);
+          if(p && p.length){
+            appendOutput('[S&D] at '+hint.x+','+hint.y+'; the map knows the rest ('
+              + p.length + ' step'+(p.length===1?'':'s')+').\n','quest');
+            gotoRoomUid(t.roomUid, ()=>{ sndState.pendingXcp = t; t.recallSent = true; xcpStep(t); },
+                        {noAreaHop:true});
+            return;
+          }
+        }
+        // Nothing learned yet, so fall back to the landmark. One attempt only:
+        // re-entering xcpStep on failure sent the character round the whole
+        // recall/runto/steer circuit again and again.
+        if(t.landmarkTried){
+          appendOutput('[S&D] at '+hint.x+','+hint.y+' but "'+(hint.landmark||'the landmark')
+            + '" did not let us in. '+(hint.note||'')+'\n','error');
+          xcpAbandonTarget(t, 'landmark did not work');
+          return;
+        }
+        t.landmarkTried = true;
         const kw = landmarkKeyword(hint.landmark);
         if(!kw){
           appendOutput('[S&D] at '+hint.x+','+hint.y+'. '+(hint.note||'')
@@ -1106,10 +1130,14 @@ export function xcpStep(t){
     const known = entryHint(t.areaName);
     if(known && known.norunto){
       appendOutput('[S&D] runto cannot reach '+t.areaName+'.\n','error');
-      // An item hint needs no travel at all, so act on it before giving up. This is
-      // the remembered path -- the note was learned on an earlier attempt, possibly
-      // in an earlier campaign.
-      if(known.item && followEntryHint(t, known)) return;
+      // Act on the hint before giving up -- ANY hint, not just an item one. This
+      // used to be `known.item && ...`, so a COORDINATE hint printed "get there
+      // yourself (via Vidblain at 10,15)" and abandoned the target, even though
+      // followEntryHint's whole other half exists to runto the bridging area and
+      // steer to that coordinate. Doing it by hand (runto vidblain, /navcoord
+      // 10,15, then `u` into the Keep) worked first time, which is precisely the
+      // sequence this branch already knows how to issue.
+      if(followEntryHint(t, known)) return;
       if(known.note) appendOutput('[S&D] the game says: '+known.note+'\n','quest');
       appendOutput('[S&D] get there yourself'
         + (known.area ? ' (via '+known.area
