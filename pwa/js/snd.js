@@ -219,6 +219,97 @@ function lastWord(s){
 const KEY_GOT_IT   = /^you get |^you take /im;
 const KEY_ABSENT   = /^you (?:do not|don'?t) see|^that (?:is|s) not here|isn'?t here|^you cannot find/im;
 
+// A key that is not on a shelf but in a pocket. 882 exits carry a key note and a
+// good share of them name a MOB -- "carried by cityguard", "Guarded by an ogre
+// guard" -- and until now the helper located the holder and stopped, printing
+// "kill it, take the key, then /xcp again". That is one manual step per locked
+// door, and it came up twice in a single campaign: an ogre guard in the Keep of
+// the Asherodan and a cityguard at the gates of Diamond Reach.
+//
+// The holder wanders, so it is chased with `hunt` rather than walked to by room --
+// which is also why the cityguard could not be found by `where`: it was standing
+// in the room while hunt pointed through a closed gate at a second one.
+const KEY_MOB_HOPS = 20;          // how far to chase before giving up
+const MOB_DIED = /\bis dead\b|crumbles|You receive \d+ experience|corpse of/i;
+
+function fetchKeyFromMob(t, gate, resume){
+  const src = gate.source;
+  const kw = gmkw(src.mob) || whereKw(src.mob);
+  if(!kw){
+    appendOutput('[S&D] '+(gate.keyName||'the key')+' is on '+src.mob
+      + ', but there is no keyword to search on.\n','error');
+    return false;
+  }
+  const tag = gate.fromUid + '|' + gate.dir;
+  if(boughtKeys.has(tag)) return false;      // already tried this door
+  boughtKeys.add(tag);
+  appendOutput('[S&D] '+(gate.keyName||'the key')+' is carried by '+src.mob
+    + '; hunting it down to take it.\n','quest');
+  sndState.pendingKeyMob = {t, gate, resume, kw, mob: src.mob, keyName: gate.keyName,
+                            note: src.note, stage: 'find', hops: 0, ts: Date.now()};
+  sendCmd('hunt ' + kw);
+  return true;
+}
+
+function giveUpOnKeyMob(st, why){
+  sndState.pendingKeyMob = null;
+  appendOutput('[S&D] '+why+' -- take '+(st.keyName||'the key')+' from '+st.mob
+    + ' yourself, then /xcp again.\n','error');
+}
+
+/** Feed MUD output here while a key-carrying mob is being chased. */
+export function parseKeyMobOutput(text){
+  const st = sndState.pendingKeyMob;
+  if(!st) return;
+  if(Date.now() - st.ts > 20000){ giveUpOnKeyMob(st, 'lost track of '+st.mob); return; }
+  const clean = stripAnsi(text);
+
+  if(st.stage === 'find'){
+    if(HUNT_IS_HERE.test(clean)){
+      st.stage = 'kill';
+      st.ts = Date.now();
+      appendOutput('[S&D] '+st.mob+' is here; killing it for '
+        + (st.keyName||'the key')+'.\n','quest');
+      sendCmd('kill ' + st.kw);
+      return;
+    }
+    if(HUNT_UNABLE.test(clean) || /\byou (?:cannot|can'?t) find\b|\bno .* to hunt\b/i.test(clean)){
+      giveUpOnKeyMob(st, 'cannot hunt '+st.mob);
+      return;
+    }
+    const d = HUNT_DIR_RE.exec(clean);
+    if(d){
+      if(++st.hops > KEY_MOB_HOPS){ giveUpOnKeyMob(st, 'chased '+st.mob+' too far'); return; }
+      const dir = HUNT_DIRS[d[1].toLowerCase()];
+      if(!dir){ giveUpOnKeyMob(st, 'hunt pointed somewhere I cannot walk'); return; }
+      st.ts = Date.now();
+      sendCmdRaw(dir);
+      setTimeout(()=>{ if(sndState.pendingKeyMob === st) sendCmd('hunt ' + st.kw); }, 1500);
+      return;
+    }
+    return;
+  }
+
+  if(st.stage === 'kill'){
+    if(!MOB_DIED.test(clean)) return;
+    // Dead. Hand the looting to the fetch parser that already knows how to notice
+    // "You get <key>", re-arm the door and resume the walk -- the whole point of
+    // this being one machine rather than two.
+    sndState.pendingKeyMob = null;
+    sndState.pendingKeyFetch = {t: st.t, gate: st.gate, resume: st.resume,
+                                keyName: st.keyName, what: st.mob, note: st.note,
+                                ts: Date.now()};
+    setTimeout(()=>sendCmdRaw('get all corpse'), 700);
+    setTimeout(()=>{
+      if(!sndState.pendingKeyFetch) return;              // resumed already
+      sndState.pendingKeyFetch = null;
+      appendOutput('[S&D] '+st.mob+' is dead but '+(st.keyName||'the key')
+        + ' was not on it. '+(st.note||'')+'\n','error');
+    }, 9000);
+    return;
+  }
+}
+
 /** Feed MUD output here while a key is being fetched. */
 export function parseKeyFetchOutput(text){
   const st = sndState.pendingKeyFetch;
@@ -291,23 +382,7 @@ function tryGetKeyThen(t, gate, resume){
     if(fetchKeyFromContainer(t, gate, resume)) return true;
   }
   if(src && src.kind === 'mob'){
-    const tag = gate.fromUid + '|' + gate.dir;
-    if(boughtKeys.has(tag)) return false;
-    boughtKeys.add(tag);
-    const kw = gmkw(src.mob) || whereKw(src.mob);
-    appendOutput('[S&D] the key ('+(gate.keyName||'?')+') is on '+src.mob+'.\n','quest');
-    if(!kw){
-      appendOutput('[S&D] no keyword to search on; find it yourself, then /xcp '
-        + (t ? t.index : '') + '.\n','error');
-      return false;
-    }
-    appendOutput('[S&D] locating it (where '+kw+')...\n','quest');
-    sendCmd('where '+kw);
-    // Deliberately not chained into a kill. Finding the mob is navigation;
-    // killing it is a choice, and the player is the one making it.
-    appendOutput('[S&D] kill '+src.mob+', take the key, then /xcp '
-      + (t ? t.index : '') + ' to carry on.\n','quest');
-    return false;
+    if(fetchKeyFromMob(t, gate, resume)) return true;
   }
   return tryBuyKeyThen(t, gate, resume);
 }
