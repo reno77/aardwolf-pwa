@@ -281,7 +281,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-6.3';
+export const NAV_BUILD = 'nav-6.4';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -446,10 +446,15 @@ export function walkTo(targetUid, onDone, onFail, opts){
       appendOutput('[nav] the local map is split here; following Gaardian\'s own route: '
         + ref.map(p=>p.dir).join(' ') + '\n','system');
       plan = {path: ref, viaCandidate: null, choices: 0, fromReference: true};
-    } else if(ref && !ref.length){
+    } else if(ref && !ref.length && currentRoom.uid === targetUid){
       if(onDone) onDone();
       return true;
     }
+    // An EMPTY reference path means "both ends are the same Gaardian room", which
+    // is true of any two of the ten rooms called "On the Oinos Gloom of Hades" --
+    // and is emphatically not the same as having arrived. Reading it as success
+    // reported the walk complete without moving a step, twice, while the character
+    // stood in the wrong one of them unable to leave the plane.
   }
   const path = plan.path;
   if(path === null){
@@ -1304,7 +1309,11 @@ export function doNavTo(target){
   const [name, area] = row;
   appendOutput('[nav] walking to ' + uid + ' "' + name + '"'
     + (area ? ' [' + area + ']' : '') + '\n', 'system');
-  walkTo(uid, () => appendOutput('[nav] arrived at ' + name + '.\n','system'));
+  // A uid is exact, so the name is nothing but a chance to be wrong: `/navto 266`
+  // announced "arrived at On the Oinos Gloom of Hades" while standing in room 270,
+  // which shares the name with nine others.
+  walkTo(uid, () => appendOutput('[nav] arrived at ' + name + '.\n','system'),
+         null, {ignoreName: true});
 }
 
 export function doRunto(target){

@@ -2959,6 +2959,66 @@ export function parseNotHereOutput(text){
  * something else standing in the wrong room, and swinging at it is how you end
  * up fighting a level 80 guard by accident.
  */
+// How many rooms to walk while trying the mob in each. The Lower Planes layer that
+// prompted this has ten; a dozen covers it with room to spare, and every step is a
+// real move in a live area.
+const SWEEP_WALK_ROOMS = 14;
+
+/**
+ * Walk the area trying the kill in each room.
+ *
+ * The last resort when a mob's location cannot be narrowed to a room. `where` only
+ * ever names the room, and when ten rooms share that name it has told us nothing;
+ * the imported skeleton makes it worse, because resolveRoomsByName offers rooms
+ * nobody has walked and gotoRoomUid cannot reach them.
+ *
+ * So stop trying to be clever about WHICH room and just try them: the campaign mob
+ * is by definition the copy that refuses to be hunted, so "kill here and see
+ * whether the campaign clears" is the only test that actually distinguishes it.
+ * Found the hordling in five rooms after the twin sweep had given up.
+ *
+ * Always the plain keyword, never an ordinal: ordinals count copies in the ROOM,
+ * and walking into a new room makes any number carried from the last one a lie.
+ */
+function sweepByWalking(t){
+  if(!t || t.sweepWalk) return false;
+  t.sweepWalk = {rooms: 0, tried: new Set()};
+  appendOutput('[S&D] every room here has the same name, so there is nothing to tell\n'
+    + '       them apart -- walking the area and trying '+t.mob+' in each.\n','quest');
+  sweepWalkStep(t);
+  return true;
+}
+
+function sweepWalkStep(t){
+  if(sndState.pendingXcp !== t) return;          // target changed or cleared
+  const s = t.sweepWalk;
+  if(s.rooms >= SWEEP_WALK_ROOMS){
+    appendOutput('[S&D] tried '+s.rooms+' rooms without the campaign clearing.'
+      + ' '+t.mob+' may have moved; /xcp '+t.index+' to re-locate.\n','error');
+    sndState.pendingXcp = null;
+    return;
+  }
+  s.rooms++;
+  const kw = actionKw(t) || gmkw(t.mob);
+  // xcpKillTarget gates on health itself and verifies the kill, so a success ends
+  // the run properly rather than being guessed at here.
+  xcpKillTarget(t, kw, ()=>{
+    if(sndState.pendingXcp !== t) return;
+    const here = String(currentRoom.uid || '');
+    const exits = currentRoom.exits || [];
+    const pick = ['n','e','s','w','u','d'].find(d => exits.includes(d) && !s.tried.has(here+'|'+d))
+              || exits[0];
+    if(!pick){
+      appendOutput('[S&D] nowhere left to try from here.\n','error');
+      sndState.pendingXcp = null;
+      return;
+    }
+    s.tried.add(here+'|'+pick);
+    sendCmdRaw(pick);
+    setTimeout(()=>sweepWalkStep(t), 2400);
+  });
+}
+
 export function xcpSweepTwins(t){
   if(!t || t.is_dead) return;
   const roomName=(t.campaignInstance && t.campaignInstance.roomName) || currentRoom.name;
@@ -2977,6 +3037,16 @@ export function xcpSweepTwins(t){
   const twins=resolveRoomsByName(roomName, currentRoom.area || t.areaName)
     .filter(r=>r.uid && r.uid!==currentRoom.uid && !t.twinsTried.includes(r.uid));
   if(!twins.length){
+    // The named twins are exhausted, which is not the same as "the mob is not
+    // here": resolveRoomsByName returns rooms from the local map INCLUDING the
+    // imported skeleton, and gotoRoomUid cannot reach a room nobody has walked. So
+    // the list runs out having visited only the handful that were reachable.
+    //
+    // Hades is the case. `where` can only name the LAYER -- all ten rooms are "On
+    // the Oinos Gloom of Hades" -- so there is nothing to distinguish them by, and
+    // the campaign hordling sat in the fifth room while this reported it missing.
+    // Walking the area and trying each room found it in five rooms.
+    if(sweepByWalking(t)) return;
     appendOutput('[S&D] tried every room called "'+roomName+'" in '+t.areaName
       + ' and '+t.mob+' was in none of them -- it has moved, or the room is not mapped. '
       + 'Run /xcp '+t.index+' again to re-locate.\n','error');
