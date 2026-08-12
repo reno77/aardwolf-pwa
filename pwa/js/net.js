@@ -13,7 +13,7 @@ import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseW
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { commandMap } from './state.js';
-import { doXq, questInfo } from './quest.js';
+import { doXq, parseQuestRoomOutput, questInfo } from './quest.js';
 import { openTransport } from './transport.js';
 import { setSyncBase, setSyncToken, syncBase, syncMap, syncOnLogin, syncReset,
          syncStatus } from './sync.js';
@@ -506,6 +506,7 @@ export function handleMessage(msg){
       parseWhereOrdOutput(msg.text);   // and where that copy is
       parseKeyFetchOutput(msg.text);   // did the key actually come out of the box
       parseKeyMobOutput(msg.text);     // ...or off the mob that was carrying it
+      parseQuestRoomOutput(msg.text);  // which copy here wears the [Quest] tag
       parseEntryItemOutput(msg.text);  // readying a held portal such as the amulet
       processTriggers(msg.text); parseWhereOutput(msg.text); parseHuntOutput(msg.text); checkQuest(msg.text);
       break;

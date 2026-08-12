@@ -2650,6 +2650,14 @@ function onArriveAtInstance(t){
   //
   // (Not the same as the `where` vs `hunt` numbering question: those two agree for
   // a clean keyword. This is hunt vs kill.)
+  // A QUEST target is picked out a different way entirely: the game marks it with
+  // a [Quest] tag on the end of its name, and only while you are in the room with
+  // it -- `where` does not show the tag. So the hunt trick, which is the campaign
+  // rule, is not just unnecessary here, it is the wrong test.
+  if(t && t.isQuest && questHooks && questHooks.killHere){
+    questHooks.killHere(t, ()=>xcpKillTarget(t));
+    return;
+  }
   // The in-area probe already tested every copy hunt can see; repeating it here
   // would ask the same questions and get the same answers.
   const many = (t.whereInstances && t.whereInstances.length > 1);

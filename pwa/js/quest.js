@@ -31,7 +31,7 @@
 // so there is nothing to poll and no window in which the answer is stale.
 
 import { resolveRoomByNameAnywhere } from './db.js';
-import { appendOutput } from './ui.js';
+import { appendOutput, stripAnsi } from './ui.js';
 import { sendCmd } from './net.js';
 import { cancelWalk, isWalking } from './nav.js';
 import { gmkw, huntTrickKw, sndState, setQuestHooks, xcpStep } from './snd.js';
@@ -298,10 +298,83 @@ export function doXq(){
   }
 }
 
+// ---------------------------------------------------------------------------
+// picking the right copy: the [Quest] tag
+// ---------------------------------------------------------------------------
+// A campaign mob is identified by the hunt trick -- the copy that refuses to be
+// hunted. A QUEST mob is not: the game marks it with a [Quest] tag on the end of
+// its name, and shows that tag ONLY while you are standing in the room with it.
+// `where` never shows it. So the tag is the test, and it can only be applied on
+// arrival, by looking.
+//
+// `kill` counts copies within the room, so the tag's position in the room's own
+// list is exactly the ordinal to use -- which is the one numbering that means
+// anything once we are standing here (see onArriveAtInstance in snd.js).
+const QUEST_TAG = /\[\s*quest\s*\]/i;
+let roomScan = null;
+
+/** Feed MUD output here while the room is being read for the [Quest] tag. */
+export function parseQuestRoomOutput(text){
+  const st = roomScan;
+  if(!st) return;
+  if(Date.now() - st.ts > 9000){
+    roomScan = null;
+    appendOutput('[quest] no reply to "look"; killing whatever is here instead.\n','error');
+    if(st.onStillAlive) st.onStillAlive();
+    return;
+  }
+  st.buf += stripAnsi(text);
+  // Wait for a whole mob list. Aardwolf brackets it when the client asks for the
+  // tags, and a plain look ends with the prompt.
+  const closed = /\{\/roomchars\}/.test(st.buf);
+  if(!closed && !/\d+\/\d+hp/.test(st.buf)) return;
+  roomScan = null;
+
+  const block = (st.buf.match(/\{roomchars\}([\s\S]*?)\{\/roomchars\}/) || [, st.buf])[1];
+  const lines = block.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  // Which of the copies in THIS room carries the tag? Count only lines that look
+  // like our mob, so an unrelated tagged mob standing here cannot be miscounted.
+  let ord = 0, found = 0;
+  for(const line of lines){
+    if(!lineMentions(line, st.kw)) continue;
+    ord++;
+    if(QUEST_TAG.test(line)){ found = ord; break; }
+  }
+  if(!found){
+    // The tag is absent, so the quest mob is not in this room -- whatever else is.
+    // Say so rather than killing a copy at random and wasting the quest.
+    appendOutput('[quest] nothing here carries the [Quest] tag, so this is not the one.\n','quest');
+    if(st.onStillAlive) st.onStillAlive();
+    return;
+  }
+  const target = found > 1 ? found + '.' + st.kw : st.kw;
+  appendOutput('[quest] copy ' + found + ' here carries the [Quest] tag; killing '
+    + target + '.\n','quest');
+  sendCmd('kill ' + target);
+}
+
+/** Does this room line refer to the mob we want? */
+function lineMentions(line, kw){
+  return String(line).toLowerCase().includes(String(kw).toLowerCase());
+}
+
 // snd.js owns the pipeline but must not import this module -- gmcp.js already
 // imports both, and a third edge would make the cycle harder to reason about than
 // it needs to be. Register instead, the way nav.js registers its walk canceller.
 setQuestHooks({
+  /**
+   * In the room with the target. Read the mob list and kill the tagged copy.
+   *
+   * `onStillAlive` is the campaign machinery's own next step, used when no tag is
+   * here -- so a wrong room falls through to the behaviour that sweeps for it
+   * rather than dead-ending.
+   */
+  killHere(t, onStillAlive){
+    const kw = t.kw || gmkw(t.mob);
+    roomScan = { t, kw, onStillAlive, buf: '', ts: Date.now() };
+    appendOutput('[quest] looking for the [Quest] tag -- it is only visible in the room.\n','quest');
+    sendCmd('look');
+  },
   /**
    * A quest kill needs no poll: comm.quest {"action":"killed"} arrives on its own.
    * So wait for it, and only if it does not come conclude that whatever died was
