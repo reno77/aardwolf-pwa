@@ -281,7 +281,7 @@ function reportKeyFor(fromUid, dir){
 
 // Bump when shipping a client change you will be asked about. /navdiag prints
 // it, so "still the same error" can be told apart from "still the old code".
-export const NAV_BUILD = 'nav-6.1';
+export const NAV_BUILD = 'nav-6.2';
 
 const STEP_TIMEOUT_MS = 6000;
 const MAX_REPATH = 5;
@@ -790,8 +790,30 @@ export function onMudText(text){
     if(b.missingItem){
       if(!isCustomExit(walk.lastDir)) continue;
       const item = neededItem(walk.lastDir);
+      // The route is real, we just cannot use it -- so park the exit at level 999
+      // and look for another way, exactly as a guarded exit is handled. Reporting
+      // and stopping here strands the character whenever the cheap route needs an
+      // item and a long one exists: in the Ruins of Diamond Reach the map's only
+      // preferred way out of the Mage's Den is `wear drtempshard;w` (6 steps to
+      // the area entrance) while a perfectly good 19-step walk goes round, and the
+      // walker kept choosing the shard and giving up.
+      if(walk.lastFrom){
+        try {
+          sqlDb.run('UPDATE exits SET level=999 WHERE from_uid=? AND dir=?',
+            [walk.lastFrom, walk.lastDir]);
+        } catch(e){ console.error(e); }
+      }
+      appendOutput('[nav] that way needs ' + (item ? '"' + item + '"' : 'an item')
+        + ' you are not carrying; routing around it\n','system');
+      if(++walk.repaths <= MAX_REPATH){
+        walk.plan = null;
+        walk.blind = false;
+        clearStepTimer();
+        walk.timer = setTimeout(step, 600);
+        return;
+      }
       finish(false, 'that way needs ' + (item ? '"' + item + '"' : 'an item')
-        + ', which you are not carrying (' + walk.lastDir + ')');
+        + ', and there is no way round it (' + walk.lastDir + ')');
       return;
     }
     if(b.noportal && currentRoom.uid){
