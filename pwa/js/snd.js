@@ -1493,7 +1493,7 @@ const HUNT_IS_HERE  = /\bis here\b/i;
 // stayed armed and the machine sat waiting for a reply it had already been given.
 // For identification a direction means the same as "is here" -- huntable, so not
 // the campaign mob -- so it advances to the next copy.
-const HUNT_DIRECTION = /passed through here|you are confident that|\btrail\b.*\b(?:leads|heads|goes)\b|heading (?:north|south|east|west|up|down)|hunting (?:north|south|east|west|up|down)/i;
+const HUNT_DIRECTION = /passed through here|you are confident that|\btrail\b.*\b(?:leads|heads|goes)\b|you are certain that|\bis (?:north|south|east|west|up|down) from here\b|heading (?:north|south|east|west|up|down)|hunting (?:north|south|east|west|up|down)/i;
 // Hunt replies NAME the mob, which is the way out of the keyword problem below.
 const HUNT_NAMES = [
   /^(?:you are confident that\s+)?(.+?)\s+passed through here/im,
@@ -2063,9 +2063,9 @@ export function parseXcpNavOutput(text){
   const nav=n.nav;
 
   // Directional hunt: parse explicit direction lines from Aardwolf.
-  const dirLine=lines.find(line=>(/(confident|heading|trail)/i.test(line) && /(?:heading|leading|fled|went|go|to|toward|direction)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i.test(line)));
+  const dirLine=lines.find(line=>(/(confident|certain|heading|trail)/i.test(line) && /(?:heading|leading|fled|went|go|to|toward|direction|is)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i.test(line)));
   if(dirLine){
-    const dirMatch=dirLine.match(/(?:heading|leading|fled|went|go|to|toward|direction)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i);
+    const dirMatch=dirLine.match(/(?:heading|leading|fled|went|go|to|toward|direction|is)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i);
     const dirMap={north:'n',south:'s',east:'e',west:'w',northeast:'ne',northwest:'nw',southeast:'se',southwest:'sw',up:'u',down:'d'};
     const dir=dirMap[dirMatch[1].toLowerCase()];
     if(dir){
@@ -2475,9 +2475,9 @@ export function parseHuntTrickOutput(text){
   }
 
   // Directional hunt: only from explicit hunt-result lines like "heading east"
-  const dirLine=lines.find(line=>/(confident|heading|trail)/i.test(line) && /(?:heading|leading|fled|went|go|to|toward|direction)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i.test(line));
+  const dirLine=lines.find(line=>/(confident|certain|heading|trail)/i.test(line) && /(?:heading|leading|fled|went|go|to|toward|direction|is)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i.test(line));
   if(dirLine){
-    const dirMatch=dirLine.match(/(?:heading|leading|fled|went|go|to|toward|direction)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i);
+    const dirMatch=dirLine.match(/(?:heading|leading|fled|went|go|to|toward|direction|is)\s+(?:the\s+)?(north(?:east|west)?|south(?:east|west)?|east|west|up|down)/i);
     const dirMap={north:'n',south:'s',east:'e',west:'w',northeast:'ne',northwest:'nw',southeast:'se',southwest:'sw',up:'u',down:'d'};
     const dir=dirMap[dirMatch[1].toLowerCase()];
     if(dir){
