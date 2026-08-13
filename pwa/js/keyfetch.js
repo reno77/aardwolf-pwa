@@ -9,7 +9,8 @@
 // code with no boundary at all. It is the largest self-contained errand the client runs:
 // a key can be four commands away or a room of guards and a trick.
 
-import { gaardianPath, resolveRoomByNameAnywhere, sqlDb } from './db.js';
+import { resolveRoomByNameAnywhere, sqlDb } from './db.js';
+import { gaardianPath } from './roomid.js';
 import { errandFor, runErrand } from './errand.js';
 import { charState, currentRoom, STATE_FIGHTING } from './gmcp.js';
 import { haveKey, refreshKeyring, stowKeys } from './keyring.js';

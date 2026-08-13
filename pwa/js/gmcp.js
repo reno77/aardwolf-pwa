@@ -1,6 +1,7 @@
 // gmcp.js -- extracted from index.html
 
-import { canonicalArea, matchAardwolfToGaardian, mergeAreaAliases, persistDb, sqlDb } from './db.js';
+import { canonicalArea, mergeAreaAliases, persistDb, sqlDb } from './db.js';
+import { matchAardwolfToGaardian } from './roomid.js';
 import { renderRooms, onRoomChanged } from './nav.js';
 import { noticeQuest } from './quest.js';
 import { noticeTravelProgress, sndState, xcpStep } from './snd.js';

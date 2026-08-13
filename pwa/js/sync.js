@@ -38,8 +38,8 @@
 // it back. That is the safe direction to fail in -- a row is re-learned rather
 // than lost -- and the walker deletes it again the first time it tries to use it.
 
-import { sqlDb, persistDb, promoteAnchoredRooms, reconnectDanglingExits,
-         dropContradictedAnchors } from './db.js';
+import { sqlDb, persistDb } from './db.js';
+import { promoteAnchoredRooms, reconnectDanglingExits, dropContradictedAnchors } from './roomid.js';
 import { appendOutput } from './ui.js';
 import { isNativeHost } from './transport.js';
 

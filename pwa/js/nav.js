@@ -18,7 +18,8 @@
 //     so that test was false every time and *every* custom-exit step aborted
 //     with "is not available here". A custom exit is now simply typed.
 
-import { gaardianCandidateUids, gaardianPath, reconnectDanglingExits, sqlDb } from './db.js';
+import { sqlDb } from './db.js';
+import { gaardianCandidateUids, gaardianPath, reconnectDanglingExits } from './roomid.js';
 import { parseKeySource } from './keys.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,

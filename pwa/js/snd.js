@@ -1,7 +1,7 @@
 // snd.js -- extracted from index.html
 
-import { areaWayOut, canonicalArea, findAreaAnywhere, gaardianAreasWithRoom, gaardianDb, gaardianPath,
-         resolveRoomByNameAnywhere, sqlDb } from './db.js';
+import { areaWayOut, canonicalArea, findAreaAnywhere, gaardianAreasWithRoom, gaardianDb, resolveRoomByNameAnywhere, sqlDb } from './db.js';
+import { gaardianPath } from './roomid.js';
 import { currentRoom, charState, charLevel, hpFraction, manaFraction,
          STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
@@ -775,6 +775,35 @@ export function noticeTravelProgress(){
 // Attempts to get out of a room that will not let us leave, before giving up.
 const RECALL_ATTEMPTS = 3;
 
+// Areas whose walk-out has already been tried and failed this session.
+//
+// The escape used to reset its own flag when the walk finished, so every recall attempt
+// tried the same border again: watched live, the character sat in the clan hall walking `u`
+// to the border room and ending up back where it started, over and over. One attempt per
+// area is the most that can be justified -- if the map's border is wrong, it stays wrong.
+const walkedOutOf = new Set();
+
+/**
+ * A room GMCP publishes no exits for cannot be planned out of, only guessed out of.
+ *
+ * "nomap" rooms -- clan halls, some quest rooms -- report num -1 and, in the Tree of
+ * Insight's case, no exits whatsoever. The walker has nothing to work with and the map has
+ * no edges either, because the uid is synthetic. So try the ordinary ways out, once each,
+ * and let the room change decide.
+ */
+function blindWayOut(){
+  const tried = sndState.blindExits || (sndState.blindExits = new Set());
+  const here = String(currentRoom.uid || '');
+  for(const dir of ['d', 'out', 'u', 'n', 'e', 's', 'w']){
+    if(tried.has(here + '|' + dir)) continue;
+    tried.add(here + '|' + dir);
+    appendOutput('[S&D] this room publishes no exits, so trying "'+dir+'".\n','quest');
+    sendCmdRaw(dir);
+    return true;
+  }
+  return false;
+}
+
 export function xcpRecall(t, onComplete, attempt, onFail){
   // User's recall alias is an equipment sequence, not the simple 'rec' command.
   const recallSeq=(sndState.recallSequence||DEFAULT_RECALL).split(';');
@@ -849,16 +878,20 @@ export function xcpRecall(t, onComplete, attempt, onFail){
       // its basement, spending every target's escalation on rooms that were never going
       // to let it leave. The map knows the border: an exit whose far side is in another
       // area. Cross it and the portal works from the other side.
-      const out = sndState.walkedOut ? null : areaWayOut(currentRoom.area, null);
+      const area = String(currentRoom.area || '');
+      if(!(currentRoom.exits || []).length && blindWayOut()){
+        setTimeout(()=>{ if(sndState.pendingXcp === t || !t) xcpRecall(t, onComplete, 0, onFail); }, 2500);
+        return;
+      }
+      const out = walkedOutOf.has(area) ? null : areaWayOut(area, null);
       if(out){
-        sndState.walkedOut = true;
+        walkedOutOf.add(area);
         appendOutput('[S&D] nothing here allows recall or a portal, so walking out of '
           + (currentRoom.area||'this area')+' into '+out.toArea+'.\n','quest');
         walkTo(out.uid, ()=>{
           sendCmdRaw(out.dir);
           setTimeout(()=>{ sndState.walkedOut = false; xcpRecall(t, onComplete, 0, onFail); }, 2500);
         }, (why)=>{
-          sndState.walkedOut = false;
           appendOutput('[S&D] could not reach the way out ('+why+').\n','error');
           if(onFail) onFail('cannot leave '+(currentRoom.area||'this area'));
           else xcpAbandonTarget(t, 'cannot leave this area');
@@ -892,17 +925,21 @@ export function xcpRecall(t, onComplete, attempt, onFail){
         // portal is refused inside it and `recall` does nothing at all, because the
         // clan hall IS the recall point. Walking out is the answer and there is no
         // sense spending two more escalation rounds discovering that.
-        const out = sndState.walkedOut ? null : areaWayOut(currentRoom.area, null);
+        const area2 = String(currentRoom.area || '');
+        if(!(currentRoom.exits || []).length && blindWayOut()){
+          setTimeout(()=>{ if(sndState.pendingXcp === t || !t) xcpRecall(t, onComplete, 0, onFail); }, 2500);
+          return;
+        }
+        const out = walkedOutOf.has(area2) ? null : areaWayOut(area2, null);
         if(out){
-          sndState.walkedOut = true;
+          walkedOutOf.add(area2);
           appendOutput('[S&D] neither the portal nor `recall` works in '
             + (currentRoom.area||'this area')+'; walking out into '+out.toArea+'.\n','quest');
           walkTo(out.uid, ()=>{
             sendCmdRaw(out.dir);
-            setTimeout(()=>{ sndState.walkedOut = false; xcpRecall(t, onComplete, 0, onFail); }, 2500);
+            setTimeout(()=>xcpRecall(t, onComplete, 0, onFail), 2500);
           }, (why)=>{
-            sndState.walkedOut = false;
-            appendOutput('[S&D] could not reach the way out ('+why+'); stepping instead.\n','error');
+              appendOutput('[S&D] could not reach the way out ('+why+'); stepping instead.\n','error');
             stepAndRetry();
           }, {ignoreName:true});
           return;
