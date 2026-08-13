@@ -1166,6 +1166,22 @@ export function xcpByIndex(index, overrideKw){
     appendOutput('[S&D] xcp target cleared.\n','system');
     return;
   }
+  // Same treatment as xcpNext: a page that has not read a `cp check` has no list to
+  // index, and answering "no live target matching X" is misleading when the campaign is
+  // running fine. Ask, then do what was asked.
+  if(sndState.cpType === 'none' || !campaignTargets.length){
+    appendOutput('[S&D] no campaign read yet -- asking the game, then /xcp '+raw+'.\n','system');
+    doCpCheck();
+    setTimeout(()=>{
+      if(sndState.cpType === 'none' || !campaignTargets.length){
+        appendOutput('[S&D] the game says you are not on a campaign. /cpnew takes one.
+','error');
+        return;
+      }
+      xcpByIndex(index, overrideKw);
+    }, 4000);
+    return;
+  }
   const live = liveTargets();
   let t = null;
   if(/^\d+$/.test(raw)){
