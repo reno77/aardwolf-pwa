@@ -23,7 +23,7 @@
 // and to leave immediately after.
 
 import { unparkItemExits } from './db.js';
-import { currentRoom, hpFraction } from './gmcp.js';
+import { charState, currentRoom, hpFraction, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
 import { appendOutput } from './ui.js';
 
@@ -40,14 +40,45 @@ const RECIPES = [
     leaveAfter: 's',          // grab it and get out rather than fighting four vines
     note: 'the crank lies in Active Plants, guarded by aggressive vines',
   },
+  {
+    // The mine key is nosteal and cannot be hunted off anybody: the reference map's
+    // own note for the mine gate says how it works --
+    //
+    //   "You will need to trick the mine guard before you can obtain this (nosteal)
+    //    key. Kill one guard for his trident and uniform. Then wear both items and
+    //    kill the second guard. He'll believe you're there to relieve him and will
+    //    hand you the key."
+    //
+    // Which is why `hunt guard` was never going to work, however well it followed
+    // the trail. Both guards stand in The guard room, next to the gate.
+    area: 'hawklord', item: 'a mine key',
+    room: 'The guard room',
+    cmds: ['kill guard', '@fight', 'get all corpse', 'wear trident', 'wear uniform',
+           'kill guard', '@fight', 'get all corpse'],
+    restAbove: 0.8,
+    note: 'the mine key needs the guard trick: kill one guard for his trident and '
+        + 'uniform, wear both, then the second guard hands the key over',
+  },
 ];
 
 function norm(s){ return String(s || '').trim().toLowerCase(); }
 
 export function errandFor(area, item){
   const a = norm(area), i = norm(item);
-  return RECIPES.find(r => norm(r.area) === a && (norm(r.item) === i
-    || i.includes(norm(r.item)) || norm(r.item).includes(i))) || null;
+  if(!a || !i) return null;
+  // Prefix either way on the area. GMCP's key for the Realm of the Hawklords is
+  // `hawklord`, singular, and a recipe written as `hawklords` matched nothing at all
+  // -- the errand simply never ran and the run fell back to hunting a guard across
+  // the whole area. A silent near-miss is the worst possible failure here.
+  const areaOk = (r) => {
+    const ra = norm(r.area);
+    return ra === a || ra.startsWith(a) || a.startsWith(ra);
+  };
+  const itemOk = (r) => {
+    const ri = norm(r.item);
+    return ri === i || i.includes(ri) || ri.includes(i);
+  };
+  return RECIPES.find(r => areaOk(r) && itemOk(r)) || null;
 }
 
 let running = null;
@@ -86,13 +117,14 @@ export function runErrand(recipe, walkTo, onDone, onFail){
     // The room is resolved by NAME because that is what the recipe can know. The
     // walker takes uids, so hand it the name and let it resolve -- see doNavTo.
     walkTo(recipe.room, () => {
-      let d = 0;
-      for(const c of recipe.cmds){ setTimeout(()=>sendCmd(c), d); d += 1200; }
-      if(recipe.leaveAfter){
-        setTimeout(()=>sendCmdRaw(recipe.leaveAfter), d);
-        d += 1500;
-      }
-      setTimeout(done, d + 500);
+      runSteps(recipe.cmds.slice(), ()=>{
+        if(recipe.leaveAfter){
+          sendCmdRaw(recipe.leaveAfter);
+          setTimeout(done, 1500);
+          return;
+        }
+        done();
+      });
     }, (why)=>{
       if(tried < 2){
         appendOutput('[errand] no route to '+recipe.room+' yet; asking again in a moment.\n','system');
@@ -121,3 +153,45 @@ export function runErrand(recipe, walkTo, onDone, onFail){
 }
 
 export function errandRunning(){ return !!running; }
+
+/**
+ * Run a recipe's steps in order, waiting where waiting is what matters.
+ *
+ * A fixed delay per command is fine for `get` and `wear` and useless for a kill: the
+ * guard-trick recipe has to finish one fight before looting the corpse and starting
+ * the next, and a fight is however long it is. `@fight` means "wait until combat
+ * ends", capped so a fight we are losing does not hold the errand open forever.
+ */
+const STEP_GAP_MS = 1200;
+const FIGHT_MIN_MS = 8000;   // give the kill time to become a fight
+const FIGHT_CAP_MS = 90000;
+
+function runSteps(steps, onDone){
+  const next = () => {
+    if(!running){ return; }                       // cancelled under us
+    const step = steps.shift();
+    if(step === undefined){ onDone(); return; }
+    // A minimum wait before believing char.status: right after `kill` the state has
+    // not caught up, so checking straight away reads "not fighting" and loots a
+    // corpse that does not exist yet. And if char.status is not flowing at all --
+    // which happens on a session the relay reattached to -- the minimum is the only
+    // thing standing between the kill and the next command.
+    if(step === '@fight'){ setTimeout(()=>waitForCombat(next, 0), FIGHT_MIN_MS); return; }
+    sendCmd(step);
+    setTimeout(next, STEP_GAP_MS);
+  };
+  next();
+}
+
+function waitForCombat(then, waited){
+  if(!running) return;
+  if(charState !== STATE_FIGHTING || waited >= FIGHT_CAP_MS){
+    if(waited >= FIGHT_CAP_MS){
+      appendOutput('[errand] that fight is still going after '
+        + Math.round(FIGHT_CAP_MS/1000)+'s; carrying on anyway.\n','error');
+    }
+    setTimeout(then, 1200);
+    return;
+  }
+  setTimeout(()=>waitForCombat(then, waited + 1500), 1500);
+}

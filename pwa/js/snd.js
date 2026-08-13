@@ -9,6 +9,7 @@ import { findPath, planRoute, walkTo, cancelWalk, exploreTo, isWalking, lastGate
          walkToCoords } from './nav.js';
 import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
          parseRuntoNote, rememberEntryHint, entryHint, landmarkKeyword } from './areas.js';
+import { errandFor, runErrand } from './errand.js';
 import { haveKey, refreshKeyring, stowKeys } from './keyring.js';
 import { scanFor } from './scan.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
@@ -220,6 +221,24 @@ function lastWord(s){
 // walked back, and hit the same locked door -- the key was never for sale, it was
 // in a desk.
 const KEY_GOT_IT   = /^you get |^you take /im;
+// Thief work. `look <mob>` shows what it carries, `steal <item> <mob>` takes it.
+// A key the game flags nosteal has to be fought for -- the mine key says so in its
+// own note -- so the flag is checked before the attempt rather than after.
+const KEY_IS_NOSTEAL = /\bnosteal\b|cannot be stolen/i;
+const STEAL_OK       = /you (?:steal|got|now have)\b|you successfully (?:steal|pilfer)/i;
+const STEAL_FAILED   = /you failed|oops|fumble|couldn'?t find|nothing to steal|too (?:aware|alert)/i;
+const STEAL_TRIES    = 3;
+
+/** Does this reply show the key on the mob? */
+function keyLooksPresent(text, keyName){
+  const words = String(keyName || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+  const sig = words.filter(w => !['a','an','the','of','to','key'].includes(w));
+  const hay = String(text).toLowerCase();
+  // "a mine key" -> look for "mine" AND "key"; a bare "key" alone is too loose, but
+  // a key whose whole name IS "a key" has nothing else to go on.
+  if(!sig.length) return /\bkey\b/.test(hay);
+  return /\bkey\b/.test(hay) && sig.some(w => hay.includes(w));
+}
 const KEY_ABSENT   = /^you (?:do not|don'?t) see|^that (?:is|s) not here|isn'?t here|^you cannot find/im;
 
 // A key that is not on a shelf but in a pocket. 882 exits carry a key note and a
@@ -260,11 +279,76 @@ function fetchKeyFromMob(t, gate, resume){
   if(boughtKeys.has(tag)) return false;      // already tried this door
   boughtKeys.add(tag);
   appendOutput('[S&D] '+(gate.keyName||'the key')+' is carried by '+src.mob
-    + '; hunting it down to take it.\n','quest');
+    + '; asking where it is.\n','quest');
   sndState.pendingKeyMob = {t, gate, resume, kw, mob: src.mob, keyName: gate.keyName,
-                            note: src.note, stage: 'find', hops: 0, ts: Date.now()};
-  sendCmd('hunt ' + kw);
+                            note: src.note, stage: 'where', hops: 0, tried: [],
+                            ts: Date.now()};
+  // `where` before `hunt`. hunt follows a trail one room at a time and loses it the
+  // moment the mob moves: chasing the Realm of the Hawklords' guard went twenty hops
+  // and ended up "In the air", outside the mines entirely. `where` answers with the
+  // ROOM, area-wide, in one command -- which is also how the campaign targets are
+  // located, so the walker already knows what to do with it.
+  sendCmd('where ' + kw);
   return true;
+}
+
+/**
+ * Walk to the room `where` named, then kill for the key.
+ *
+ * Each room is tried once, so a guard that has wandered off by the time we arrive
+ * costs one walk rather than the whole errand: the next sighting is already in the
+ * list, and when the list runs out `hunt` is still there to fall back on.
+ */
+function gotoKeyMobRoom(st){
+  if(sndState.pendingKeyMob !== st) return;
+  const room = st.rooms.shift();
+  if(!room){
+    st.stage = 'find'; st.ts = Date.now(); st.hops = 0;
+    appendOutput('[S&D] none of the rooms where had '+st.mob+' worked out; hunting instead.\n','quest');
+    sendCmd('hunt ' + st.kw);
+    return;
+  }
+  st.tried.push(room);
+  const target = resolveRoomByName(room, currentRoom.area) || resolveRoomByNameAnywhere(room, currentRoom.area);
+  if(!target || !target.uid){
+    appendOutput('[S&D] "'+room+'" is not in the map; trying the next sighting.\n','quest');
+    gotoKeyMobRoom(st);
+    return;
+  }
+  gotoRoomUid(target.uid, ()=>{
+    if(sndState.pendingKeyMob !== st) return;
+    appendOutput('[S&D] in '+room+' with '+st.mob+'.\n','quest');
+    approachKeyMob(st);
+  }, {noKeyBuy: true});           // do not recurse into another key errand on the way
+  // gotoRoomUid reports its own failures; if the walk dies we fall through to the
+  // 20s staleness check at the top of parseKeyMobOutput, which moves things on.
+  setTimeout(()=>{
+    if(sndState.pendingKeyMob === st && st.stage === 'goto') gotoKeyMobRoom(st);
+  }, 45000);
+}
+
+/**
+ * In the room with the key-carrier: pick its pocket if we can, fight it if we cannot.
+ *
+ * `look <mob>` is the cheap question -- for a thief it shows what the mob carries --
+ * and `steal` leaves it alive, which matters when the same key is wanted again. The
+ * note is consulted first: a key the map marks nosteal (the mine key says so in as
+ * many words) can only be taken the hard way, and a failed steal on a guard starts a
+ * fight anyway.
+ */
+function approachKeyMob(st){
+  if(sndState.pendingKeyMob !== st) return;
+  if(KEY_IS_NOSTEAL.test(String(st.note || ''))){
+    st.stage = 'kill'; st.ts = Date.now();
+    appendOutput('[S&D] the map says '+(st.keyName||'that key')
+      + ' is nosteal, so killing '+st.mob+' for it.\n','quest');
+    sendCmd('kill ' + st.kw);
+    return;
+  }
+  st.stage = 'peek'; st.ts = Date.now();
+  appendOutput('[S&D] looking at '+st.mob+' to see whether '+(st.keyName||'the key')
+    + ' can be lifted.\n','quest');
+  sendCmd('look ' + st.kw);
 }
 
 function giveUpOnKeyMob(st, why){
@@ -305,16 +389,52 @@ function giveUpOnKeyMob(st, why){
 export function parseKeyMobOutput(text){
   const st = sndState.pendingKeyMob;
   if(!st) return;
-  if(Date.now() - st.ts > 20000){ giveUpOnKeyMob(st, 'lost track of '+st.mob); return; }
+  // Not while the walker has it: a walk across an area easily outlasts 20s, and this
+  // check would abandon the errand mid-route. gotoKeyMobRoom has its own deadline.
+  if(st.stage !== 'goto' && Date.now() - st.ts > 20000){
+    giveUpOnKeyMob(st, 'lost track of '+st.mob);
+    return;
+  }
   const clean = stripAnsi(text);
+
+  if(st.stage === 'where'){
+    // Nothing of that name in the area: hunt is the only thing left to try.
+    if(/there is no |no one (?:in this area |here )?by|you (?:did ?n'?t|do not) find/i.test(clean)){
+      appendOutput('[S&D] where cannot see '+st.mob+' in this area; hunting instead.\n','quest');
+      st.stage = 'find'; st.ts = Date.now();
+      sendCmd('hunt ' + st.kw);
+      return;
+    }
+    const want = keyMobName(st.mob);
+    const rooms = [];
+    for(const line of clean.split(/\r?\n/)){
+      const m = line.match(WHERE_ROW);
+      if(!m) continue;
+      if(/^\[/.test(m[1].trim())) continue;         // the vitals prompt has this shape too
+      const room = m[2].trim();
+      if(room.length < 3 || !/[a-z]/i.test(room)) continue;
+      const named = m[1].trim();
+      // Only lines that are actually our mob: `where guard` in a mine answers with
+      // every guard in it, and the note says which one carries the key only in prose.
+      if(!(mobMatches(want, named) || mobMatches(st.kw, named))) continue;
+      if(st.tried.includes(room)) continue;
+      rooms.push(room);
+    }
+    if(!rooms.length) return;                        // more of the reply may be coming
+    st.stage = 'goto'; st.ts = Date.now();
+    st.rooms = rooms;
+    appendOutput('[S&D] '+st.mob+' is in '+rooms[0]
+      + (rooms.length > 1 ? ' (+'+(rooms.length-1)+' more)' : '')+'; going there.\n','quest');
+    gotoKeyMobRoom(st);
+    return;
+  }
+
+  if(st.stage === 'goto') return;                    // the walker is driving
 
   if(st.stage === 'find'){
     if(HUNT_IS_HERE.test(clean)){
-      st.stage = 'kill';
-      st.ts = Date.now();
-      appendOutput('[S&D] '+st.mob+' is here; killing it for '
-        + (st.keyName||'the key')+'.\n','quest');
-      sendCmd('kill ' + st.kw);
+      appendOutput('[S&D] '+st.mob+' is here.\n','quest');
+      approachKeyMob(st);
       return;
     }
     if(HUNT_UNABLE.test(clean) || /\byou (?:cannot|can'?t) find\b|\bno .* to hunt\b/i.test(clean)){
@@ -329,6 +449,55 @@ export function parseKeyMobOutput(text){
       st.ts = Date.now();
       sendCmdRaw(dir);
       setTimeout(()=>{ if(sndState.pendingKeyMob === st) sendCmd('hunt ' + st.kw); }, 1500);
+      return;
+    }
+    return;
+  }
+
+  // A thief can take the key off the mob instead of killing it. `look <mob>` shows
+  // what it is carrying (peek), and `steal <item> <mob>` takes it -- cheaper than a
+  // fight, and it leaves the mob alive for whoever else needs the same key.
+  if(st.stage === 'peek'){
+    if(KEY_IS_NOSTEAL.test(clean) || !keyLooksPresent(clean, st.keyName)){
+      // Not visible on it, or the game says it cannot be taken: fight for it.
+      st.stage = 'kill'; st.ts = Date.now();
+      appendOutput('[S&D] '+(st.keyName||'the key')+' cannot be lifted off '+st.mob
+        + '; killing it instead.\n','quest');
+      sendCmd('kill ' + st.kw);
+      return;
+    }
+    st.stage = 'steal'; st.ts = Date.now(); st.steals = 0;
+    appendOutput('[S&D] '+st.mob+' is carrying '+(st.keyName||'the key')
+      + '; stealing it.\n','quest');
+    sendCmd('steal ' + keyKeyword(st.keyName) + ' ' + st.kw);
+    return;
+  }
+
+  if(st.stage === 'steal'){
+    if(STEAL_OK.test(clean)){
+      appendOutput('[S&D] stole '+(st.keyName||'the key')+'.\n','quest');
+      sndState.pendingKeyMob = null;
+      stowKeys();
+      try {
+        sqlDb.run('UPDATE exits SET level=0 WHERE from_uid=? AND dir=? AND level=999',
+          [st.gate.fromUid, st.gate.dir]);
+      } catch(e){ console.error(e); }
+      clearGateInfo();
+      if(st.resume) st.resume();
+      return;
+    }
+    if(STEAL_FAILED.test(clean)){
+      if(++st.steals < STEAL_TRIES){
+        st.ts = Date.now();
+        setTimeout(()=>{
+          if(sndState.pendingKeyMob === st) sendCmd('steal ' + keyKeyword(st.keyName) + ' ' + st.kw);
+        }, 2500);
+        return;
+      }
+      st.stage = 'kill'; st.ts = Date.now();
+      appendOutput('[S&D] '+STEAL_TRIES+' failed attempts at picking the pocket;'
+        + ' killing '+st.mob+' for it.\n','quest');
+      sendCmd('kill ' + st.kw);
       return;
     }
     return;
@@ -447,6 +616,31 @@ function tryGetKeyThen(t, gate, resume){
       tryGetKeyThen(t, gate, resume);
     });
     return true;
+  }
+  // A written-down procedure beats searching. The mine key is the case: it is
+  // nosteal, and the reference map's own note says the only way to it is to kill one
+  // guard for his trident and uniform, wear both, and let the second guard hand it
+  // over. No amount of `hunt guard` gets there -- it followed the trail out of the
+  // mines and into the air, twice.
+  const recipe = keyName ? errandFor(currentRoom.area, keyName) : null;
+  if(recipe && !t?.errandTried){
+    if(t) t.errandTried = true;
+    return runErrand(recipe,
+      (roomName, ok, no) => {
+        const room = resolveRoomByName(roomName, currentRoom.area)
+                  || resolveRoomByNameAnywhere(roomName, currentRoom.area);
+        if(!room || !room.uid){ no('no room called '+roomName+' in the map'); return; }
+        walkTo(room.uid, ok, no, {ignoreName:true});
+      },
+      ()=>{
+        appendOutput('[S&D] the trick is done; trying the door again.\n','quest');
+        clearGateInfo();
+        resume();
+      },
+      (why)=>{
+        appendOutput('[S&D] could not work the '+keyName+' trick ('+why+'); searching instead.\n','error');
+        tryGetKeyThen(t, gate, resume);
+      });
   }
   if(src && src.kind === 'container'){
     if(fetchKeyFromContainer(t, gate, resume)) return true;
