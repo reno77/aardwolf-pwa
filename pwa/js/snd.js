@@ -2266,7 +2266,14 @@ export function xcpStep(t){
       const found = resolveRoomByNameAnywhere(t.roomName, t.areaName || currentRoom.area);
       if(found && found.uid) t.roomUid = found.uid;
     }
-    if((t.isQuest || t.type === 'room') && (t.roomUid || questRoomHere)){
+    // Some of these locations are AREA names, not rooms: `cp check` prints
+    // "Lady Aardington (Aardington Estate)", and the estate has a room called
+    // "Aardington Estate" too -- so the room-first shortcut walked to that room, swept
+    // its namesakes and reported her missing, when what the game meant was "somewhere in
+    // this area". If the location names an area, it is an area: let `where` and the hunt
+    // trick do their job.
+    const locIsArea = !!(t.rawLoc && findAreaAnywhere(t.rawLoc));
+    if((t.isQuest || (t.type === 'room' && !locIsArea)) && (t.roomUid || questRoomHere)){
       t.located = true;
       // The sweep needs the quest's room NAME even when we are standing somewhere
       // else, or it falls back to whatever room the walk happened to end in.
