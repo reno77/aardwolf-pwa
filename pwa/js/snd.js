@@ -1203,7 +1203,7 @@ export function noticeTravelProgress(){
 // Attempts to get out of a room that will not let us leave, before giving up.
 const RECALL_ATTEMPTS = 3;
 
-export function xcpRecall(t, onComplete, attempt){
+export function xcpRecall(t, onComplete, attempt, onFail){
   // User's recall alias is an equipment sequence, not the simple 'rec' command.
   const recallSeq=(sndState.recallSequence||DEFAULT_RECALL).split(';');
   const startArea = String(currentRoom.area || '');
@@ -1259,7 +1259,7 @@ export function xcpRecall(t, onComplete, attempt){
       setTimeout(()=>{
         if(sndState.pendingXcp !== t) return;
         if(String(currentRoom.area || '') !== startArea){
-          xcpRecall(t, onComplete, n);          // out of the area: portal again
+          xcpRecall(t, onComplete, n, onFail);   // out of the area: portal again
           return;
         }
         const exits = currentRoom.exits || [];
@@ -1272,7 +1272,7 @@ export function xcpRecall(t, onComplete, attempt){
         appendOutput('[S&D] `recall` is refused here too -- stepping '+pick
           + ' and trying again ('+n+'/'+RECALL_ATTEMPTS+').\n','quest');
         sendCmdRaw(pick);
-        setTimeout(()=>{ if(sndState.pendingXcp === t) xcpRecall(t, onComplete, n); }, 2000);
+        setTimeout(()=>{ if(sndState.pendingXcp === t) xcpRecall(t, onComplete, n, onFail); }, 2000);
       }, 2600);
       return;
     }
@@ -1421,7 +1421,9 @@ function recoverThen(fn, tries){
   const need = tries ? REST_UNTIL : REST_BELOW;
   if(hp >= need && mana >= REST_MANA){
     sndState.autoResting = false;
+    sndState.autoRestingSince = 0;
     sndState.autoRestMode = null;
+    sndState.autoRestHere = false;
     if(tries) sendCmdRaw('stand');
     setTimeout(fn, tries ? 1500 : 0);
     return;
@@ -1444,12 +1446,15 @@ function recoverThen(fn, tries){
     // wood, which has something aggressive in it, and sleeping there took health from
     // 76% DOWN to 69% -- the recovery was making things worse. Recall first: Aylor is
     // safe, and it is where the next target's runto has to start from anyway.
-    if(!/^aylor$/i.test(String(currentRoom.area || ''))){
+    if(!sndState.autoRestHere && !/^aylor$/i.test(String(currentRoom.area || ''))){
       appendOutput('[S&D] not resting here -- recalling somewhere safe first.\n','quest');
       sendCmdRaw('stand');
       xcpRecall(null, ()=>{
-        sendCmdRaw('sleep');
-        setTimeout(()=>recoverThen(fn, 1), 8000);
+        setTimeout(()=>recoverThen(fn, 1), 2000);
+      }, 0, (why)=>{
+        appendOutput('[S&D] '+why+'; recovering where we stand instead.\n','error');
+        sndState.autoRestHere = true;
+        setTimeout(()=>recoverThen(fn, 1), 2000);
       });
       return;
     }
@@ -1587,13 +1592,31 @@ function autoContinue(reason, ok){
 const AUTO_WATCH_MS = 15000;
 const AUTO_IDLE_MS  = 25000;
 const AUTO_STALL_MS = 90000;   // a target assigned but nothing moving
+const REST_HANG_MS  = 360000;  // a recovery that never finishes is a hang
 let autoWatch = null;
 
 function startAutoWatch(){
   if(autoWatch) return;
   autoWatch = setInterval(()=>{
     if(!sndState.autoRun){ stopAutoWatch(); return; }
-    if(sndState.autoResting){ sndState.autoIdleSince = 0; return; }   // recovering on purpose
+    // Recovering on purpose -- but not forever. The flag that tells the watchdog to
+    // leave a rest alone is also the flag that hid a hang: a pre-rest recall with no
+    // failure path never called back, and the run sat in the tombs basement for ten
+    // minutes with nothing watching it. A recovery that has not finished in
+    // REST_HANG_MS is not a recovery.
+    if(sndState.autoResting){
+      sndState.autoIdleSince = 0;
+      if(!sndState.autoRestingSince) sndState.autoRestingSince = Date.now();
+      if(Date.now() - sndState.autoRestingSince < REST_HANG_MS) return;
+      appendOutput('[S&D] recovery has been going for '+Math.round(REST_HANG_MS/60000)
+        + ' minutes with nothing to show for it -- carrying on regardless.\n','error');
+      sndState.autoResting = false;
+      sndState.autoRestingSince = 0;
+      sndState.autoRestMode = null;
+      autoContinue('recovery hung', false);
+      return;
+    }
+    sndState.autoRestingSince = 0;
     // A target still assigned is not proof anything is happening. Several failure
     // paths print a reason and leave pendingXcp set; the run then sits still with
     // a target it is not working on, which is indistinguishable from progress
