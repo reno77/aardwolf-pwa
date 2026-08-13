@@ -143,7 +143,13 @@ function recoverThen(fn, tries){
         + '% mana to spend.\n','quest');
       sendCmdRaw('stand');
     }
-    sendCmd('cast heal');
+    // Movement first when that is what is short. `cast refresh` restores moves the way
+    // `cast heal` restores health, and it is the answer to the failure that stopped this run
+    // dead: 37 movement points of 3129, every step refused, and a recovery that could only
+    // sleep and wait. Health still wins when both are low -- walking somewhere hurt is worse
+    // than waiting a tick longer.
+    if(hp >= need && moves < REST_MOVES) sendCmd('cast refresh');
+    else sendCmd('cast heal');
   } else if(sndState.autoRestMode !== 'sleep'){
     sndState.autoRestMode = 'sleep';
     appendOutput('[S&D] out of mana; sleeping the rest off.\n','quest');
