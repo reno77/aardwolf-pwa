@@ -1404,6 +1404,7 @@ function recoverThen(fn, tries){
   const need = tries ? REST_UNTIL : REST_BELOW;
   if(hp >= need && mana >= REST_MANA){
     sndState.autoResting = false;
+    sndState.autoRestMode = null;
     if(tries) sendCmdRaw('stand');
     setTimeout(fn, tries ? 1500 : 0);
     return;
@@ -1414,6 +1415,7 @@ function recoverThen(fn, tries){
       + ' -- stopping the auto-run rather than walking into a fight.\n','error');
     sndState.autoRun = false;
     sndState.autoResting = false;
+    sndState.autoRestMode = null;
     stopAutoWatch();
     return;
   }
@@ -1434,9 +1436,23 @@ function recoverThen(fn, tries){
       });
       return;
     }
-    // `sleep`, not `rest`. Resting crawled: 54% to 57% in two minutes, where sleeping
-    // took the same character from 48% to full in about five. The stand comes when the
-    // waiting is over.
+  }
+  // Spend the mana. Sleeping in Aylor recovers about 2.5% of health a minute, so
+  // getting from 77% to 95% is seven minutes of nothing -- longer than the recovery
+  // budget, which then stopped the run for "still on 77% after resting". A heal is
+  // ~257hp for ~35 mana, and the character stands there with 2389 of it: three casts
+  // do what seven minutes of sleep does. Sleep is what happens once the mana is gone.
+  if(mana > 0.25){
+    if(sndState.autoRestMode !== 'heal'){
+      sndState.autoRestMode = 'heal';
+      appendOutput('[S&D] healing rather than waiting -- '+Math.round(mana*100)
+        + '% mana to spend.\n','quest');
+      sendCmdRaw('stand');
+    }
+    sendCmd('cast heal');
+  } else if(sndState.autoRestMode !== 'sleep'){
+    sndState.autoRestMode = 'sleep';
+    appendOutput('[S&D] out of mana; sleeping the rest off.\n','quest');
     sendCmdRaw('sleep');
   }
   // Tell the watchdog this is deliberate. Without it the two fought each other: the
