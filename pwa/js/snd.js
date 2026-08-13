@@ -1141,6 +1141,39 @@ export function mergeCpCheck(checkList){
   renderCampaign();
 }
 
+/**
+ * Nothing left to try -- but say WHICH kind of nothing.
+ *
+ * `liveTargets()` means "targets I have not given up on", not "targets still alive": a
+ * failed attempt sets `skipped` on the entry, and the mob goes on living, so `cp check`
+ * keeps listing it. Printing "no live targets left" about that was the client describing
+ * its own bookkeeping in words that sound like the game's, and it reads as "the campaign
+ * is done" when eight mobs are standing exactly where they were.
+ *
+ * A skip is about a moment, so if that is all that is left, clear them and go again --
+ * once. The second time the message is the truth and there is nothing more to try.
+ */
+function nothingLeftToTry(){
+  const skipped = campaignTargets.filter(x => !x.is_dead && x.skipped);
+  const dead = campaignTargets.filter(x => x.is_dead).length;
+  if(skipped.length && !sndState.clearedSkipsManually){
+    sndState.clearedSkipsManually = true;
+    appendOutput('[S&D] '+skipped.length+' target(s) are set aside after failed attempts, not\n'
+      + '      dead -- `cp check` still lists them. Trying them again.\n','quest');
+    for(const x of skipped){ x.skipped = null; x.wanderTries = 0; }
+    xcpByIndex(1);
+    return;
+  }
+  if(skipped.length){
+    appendOutput('[S&D] every remaining target has been tried and set aside:\n','error');
+    for(const x of skipped) appendOutput('        '+x.mob+' -- '+x.skipped+'\n','error');
+    appendOutput('[S&D] they are alive; /xcp <name> forces one, /xcpauto keeps retrying.\n','error');
+    return;
+  }
+  appendOutput('[S&D] nothing left in the list ('+dead+' dead).'
+    + ' `cp check` for what the game says.\n','error');
+}
+
 export function xcpNext(){
   // A client that has just loaded has never seen a `cp check`, so it does not know a
   // campaign exists -- and the honest-looking answer, "Not on a campaign", is wrong and
@@ -1156,7 +1189,7 @@ export function xcpNext(){
         return;
       }
       if(liveTargets().length) xcpByIndex(1);
-      else appendOutput('[S&D] no live targets left.\n','error');
+      else nothingLeftToTry();
     }, 4000);
     return;
   }
@@ -1164,7 +1197,7 @@ export function xcpNext(){
   // now counts. Passing t.index here would mean "the t.index-th LIVE target",
   // which is a different target as soon as anything has died.
   if(liveTargets().length){ xcpByIndex(1); return; }
-  appendOutput('[S&D] no live targets left.\n','error');
+  nothingLeftToTry();
 }
 
 /** The targets still to kill, in the order `cp check` prints them. */
@@ -1237,6 +1270,7 @@ export function xcpByIndex(index, overrideKw){
   sndState.xcpIndex=t.index;
   // Which mob the run is on, for the resume logic: see autoContinue.
   sndState.autoLastMob = t.mob;
+  sndState.clearedSkipsManually = false;
   sndState.shortMobName=t.kw;
   sndState.pendingXcp=null;
   sndState.xcpAwaitingArea=null;
