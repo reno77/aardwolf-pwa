@@ -920,23 +920,22 @@ export function xcpRecall(t, onComplete, attempt, onFail){
     }
     const stillStuck = String(currentRoom.area || '') === startArea;
     if(stillStuck){
-      // The portal was refused. `recall` gets out of nearly anywhere, even though
-      // it lands somewhere runto cannot be used from -- from there the portal
-      // works, so this is a two-step escape rather than a dead end.
-      appendOutput('[S&D] still in '+(currentRoom.area||'?')
-        + '; the portal did not fire here. Trying plain `recall`.\n','quest');
-      sendCmdRaw('recall');
-      setTimeout(()=>{
-        if(sndState.pendingXcp !== t) return;
-        if(String(currentRoom.area || '') !== startArea){
-          xcpRecall(t, onComplete, n, onFail);   // out of the area: portal again
-          return;
-        }
-        // Both refused, so this is not a bad ROOM -- it is an area that does not let
-        // you leave that way. The clan hall is the case that kept costing minutes: the
-        // portal is refused inside it and `recall` does nothing at all, because the
-        // clan hall IS the recall point. Walking out is the answer and there is no
-        // sense spending two more escalation rounds discovering that.
+      // NO `recall` here. It costs HALF the character's total movement and it lands on the
+      // recall point -- which for this character is the clan hall, where the portal is
+      // refused. So the ladder used to read: portal fails, recall (1500 moves gone, now in
+      // the clan hall), walk out to Aylor, next target recalls straight back in. Bouncing
+      // between clan recall and Aylor, a fortune in movement every lap, until 37 points of
+      // 3129 were left and nothing could walk at all.
+      //
+      // The portal is the cheap way out and it works nearly everywhere; when a room refuses
+      // it, the answer is a different ROOM, not a different command.
+      appendOutput('[S&D] the portal did not fire in '+(currentRoom.name||'this room')
+        + '; moving somewhere it will.\n','quest');
+      {
+        if(sndState.pendingXcp !== t && t) return;
+        // A whole area that refuses the portal is a different problem from an unlucky
+        // room: the clan hall refuses it everywhere, so walking out is the answer and
+        // there is no sense spending two more rounds discovering that.
         const area2 = String(currentRoom.area || '');
         if(!(currentRoom.exits || []).length && blindWayOut()){
           setTimeout(()=>{ if(sndState.pendingXcp === t || !t) xcpRecall(t, onComplete, 0, onFail); }, 2500);
@@ -967,12 +966,12 @@ export function xcpRecall(t, onComplete, attempt, onFail){
             else xcpAbandonTarget(t, 'stuck in a norecall room with no exits');
             return;
           }
-          appendOutput('[S&D] `recall` is refused here too -- stepping '+pick
-            + ' and trying again ('+n+'/'+RECALL_ATTEMPTS+').\n','quest');
+          appendOutput('[S&D] stepping '+pick+' to find a room the portal will fire from ('
+            + n+'/'+RECALL_ATTEMPTS+').\n','quest');
           sendCmdRaw(pick);
           setTimeout(()=>{ if(sndState.pendingXcp === t) xcpRecall(t, onComplete, n, onFail); }, 2000);
         }
-      }, 2600);
+      }
       return;
     }
     // We moved, but not to Aylor recall. If we are somewhere in Aylor, WALK the rest --

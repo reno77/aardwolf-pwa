@@ -145,23 +145,27 @@ function tryEnter(){
   const here = String(currentRoom.uid || '');
   probe.tried.add(here);
   probe.visited.add(here);
-  // `recall` first, because norecall is a per-ROOM flag: the room we happened to
-  // be standing in answered "You cannot recall from this room." while a room two
-  // steps away may not, and recall needs no arrival room and no amulet. It costs
-  // one refused command when it does not work.
-  sendCmdRaw('recall');
-  setTimeout(()=>{
+  // The AMULET first, then recall. `recall` costs HALF the character's total movement every
+  // time it fires -- which is how a run ended up on 37 points of 3129, unable to walk at all
+  // -- while the amulet is free and is the intended way out of a plane. Recall stays as the
+  // fallback because it is what actually got the character out of Hades and Gladsheim, from
+  // rooms where the amulet did nothing.
+  tryAmulet(here, ()=>{
     if(!probe) return;
-    if(!inPlane()){
-      appendOutput('[plane] out -- recall worked from '+(currentRoom.name||'?')+'.\n','plane');
-      probe = null;
-      return;
-    }
-    tryAmulet(here);
-  }, ENTER_MS);
+    sendCmdRaw('recall');
+    setTimeout(()=>{
+      if(!probe) return;
+      if(!inPlane()){
+        appendOutput('[plane] out -- recall worked from '+(currentRoom.name||'?')+'.\n','plane');
+        probe = null;
+        return;
+      }
+      nextRoom('neither the amulet nor recall works here');
+    }, ENTER_MS);
+  });
 }
 
-function tryAmulet(here){
+function tryAmulet(here, onRefused){
   if(!probe) return;
   const before = here + '|' + String(currentRoom.area || '');
   sendCmdRaw('enter');
@@ -177,9 +181,11 @@ function tryAmulet(here){
       return;
     }
     if(String(currentRoom.uid||'')+'|'+String(currentRoom.area||'') !== before){
+      if(onRefused){ onRefused(); return; }
       nextRoom('that moved us but not out');
       return;
     }
+    if(onRefused){ onRefused(); return; }
     nextRoom('nothing happened');
   }, ENTER_MS);
 }
