@@ -1347,7 +1347,12 @@ export function xcpAbandonTarget(t, reason){
 // turns it on. What the loop does about it: it stops on anything it does not
 // understand rather than thrashing, rests instead of fighting hurt, and gives up
 // after AUTO_FAIL_LIMIT failures in a row.
-const AUTO_FAIL_LIMIT = 3;      // consecutive abandoned targets before stopping
+// Consecutive abandoned targets before stopping. Three was too tight once skipping
+// worked properly: a ten-target campaign can easily have three awkward ones in a row
+// -- a ticket gate, a mob that had wandered, a room the map does not hold -- and
+// stopping there left seven perfectly reachable targets untouched. A failure costs a
+// recall and a walk; a kill resets the count.
+const AUTO_FAIL_LIMIT = 5;
 const AUTO_GAP_MS = 6000;       // pause between targets
 const AUTO_PASSES = 2;          // times to re-try the targets it had to skip
 const REST_BELOW = 0.75;        // rest before the next target below this health
@@ -1398,6 +1403,7 @@ function recoverThen(fn, tries){
   // lower again. Only the decision to START resting uses the lower number.
   const need = tries ? REST_UNTIL : REST_BELOW;
   if(hp >= need && mana >= REST_MANA){
+    sndState.autoResting = false;
     if(tries) sendCmdRaw('stand');
     setTimeout(fn, tries ? 1500 : 0);
     return;
@@ -1407,14 +1413,37 @@ function recoverThen(fn, tries){
     appendOutput('[S&D] still on '+Math.round(hp*100)+'% health after resting'
       + ' -- stopping the auto-run rather than walking into a fight.\n','error');
     sndState.autoRun = false;
+    sndState.autoResting = false;
     stopAutoWatch();
     return;
   }
   if(n === 1){
     appendOutput('[S&D] '+Math.round(hp*100)+'% health, '+Math.round(mana*100)
-      + '% mana -- resting before the next target.\n','quest');
-    sendCmdRaw('rest');
+      + '% mana -- sleeping before the next target.\n','quest');
+    sndState.autoResting = true;
+    // Not HERE. The target we just gave up on left the character standing in A dark
+    // wood, which has something aggressive in it, and sleeping there took health from
+    // 76% DOWN to 69% -- the recovery was making things worse. Recall first: Aylor is
+    // safe, and it is where the next target's runto has to start from anyway.
+    if(!/^aylor$/i.test(String(currentRoom.area || ''))){
+      appendOutput('[S&D] not resting here -- recalling somewhere safe first.\n','quest');
+      sendCmdRaw('stand');
+      xcpRecall(null, ()=>{
+        sendCmdRaw('sleep');
+        setTimeout(()=>recoverThen(fn, 1), 8000);
+      });
+      return;
+    }
+    // `sleep`, not `rest`. Resting crawled: 54% to 57% in two minutes, where sleeping
+    // took the same character from 48% to full in about five. The stand comes when the
+    // waiting is over.
+    sendCmdRaw('sleep');
   }
+  // Tell the watchdog this is deliberate. Without it the two fought each other: the
+  // rest announced itself, the watchdog saw nothing running for 25s, called it a stall
+  // and restarted the run, which rested again -- around and around at 55% health with
+  // nine targets waiting.
+  sndState.autoResting = true;
   setTimeout(()=>recoverThen(fn, n), 8000);
 }
 
@@ -1480,6 +1509,7 @@ function startAutoWatch(){
   if(autoWatch) return;
   autoWatch = setInterval(()=>{
     if(!sndState.autoRun){ stopAutoWatch(); return; }
+    if(sndState.autoResting){ sndState.autoIdleSince = 0; return; }   // recovering on purpose
     // A target still assigned is not proof anything is happening. Several failure
     // paths print a reason and leave pendingXcp set; the run then sits still with
     // a target it is not working on, which is indistinguishable from progress
