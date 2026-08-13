@@ -1174,8 +1174,7 @@ export function xcpByIndex(index, overrideKw){
     doCpCheck();
     setTimeout(()=>{
       if(sndState.cpType === 'none' || !campaignTargets.length){
-        appendOutput('[S&D] the game says you are not on a campaign. /cpnew takes one.
-','error');
+        appendOutput('[S&D] the game says you are not on a campaign. /cpnew takes one.\n','error');
         return;
       }
       xcpByIndex(index, overrideKw);

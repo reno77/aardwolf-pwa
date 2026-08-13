@@ -109,3 +109,9 @@ for(const [f, s] of Object.entries(src)){
 }
 
 console.log(bad ? `\n${bad} problem(s)` : `\n${files.length} modules: imports resolve, every output parser is dispatched, no stray control characters, all parse as modules`);
+
+// EXIT NON-ZERO. This printed its findings and exited 0, so every `check && commit && run`
+// chain sailed straight past a failure it had just reported -- including one that committed
+// a module the browser could not parse, and then loaded it. A checker that cannot fail
+// cannot gate anything.
+process.exit(bad ? 1 : 0);
