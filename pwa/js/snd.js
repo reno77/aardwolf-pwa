@@ -2595,6 +2595,10 @@ function killNextCopy(t){
 // The helper killed its way from full health to dead without once looking at the
 // numbers the game sends on every tick.
 const FIGHT_ABOVE = 0.55;
+// Swings at one target before it needs a person. Used by the still-alive handler below,
+// and missing entirely until check_unresolved.mjs learned to look at variable reads --
+// the retry would have thrown a ReferenceError the first time a kill did not take.
+const KILL_RETRIES = 3;
 // Mid-fight healing: start well above the bail line so the heals actually change the
 // outcome, and leave a gap between casts so the round is not spent entirely on healing.
 const HEAL_MID_BELOW = 0.7;

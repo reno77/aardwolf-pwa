@@ -604,9 +604,9 @@ const GAARDIAN_DIRS = {0:'n', 1:'e', 2:'s', 3:'w', 4:'u', 5:'d'};
 // exit_action is mostly a command, but a few rows are prose describing how the
 // exit works rather than something you can type. Import those with level 999 so
 // they still show on the map but never appear in a route.
-const UNTYPEABLE = /^(mobprog|special|unknown)$|\(/i;
+export const UNTYPEABLE = /^(mobprog|special|unknown)$|\(/i;
 // Some rows are prose about an exit rather than a command to type.
-const IS_PROSE = /\bto (?:transport|travel|get) to\b|\bin order to\b/i;
+export const IS_PROSE = /\bto (?:transport|travel|get) to\b|\bin order to\b/i;
 
 /**
  * Turn a Gaardian exit_action into something typeable.
@@ -818,6 +818,10 @@ export function importGaardianExits(gaardianAreaid){
  * neighbours in that direction are the same room too. Promote those, and repeat.
  * That is how the live uids progressively replace the imported skeleton.
  */
+// Areas whose Gaardian data is already in the local database. Backed by a table
+// so it survives a reload, and consulted before doing the work again.
+const importedAreas = new Set();
+
 export function isAreaImported(gaardianAreaid){
   if(importedAreas.has(gaardianAreaid)) return true;
   try {

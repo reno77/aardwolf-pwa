@@ -16,13 +16,15 @@ const files = readdirSync(dir).filter(f => f.endsWith('.js'));
 
 // Names the language and browser provide. Not exhaustive; extend when something legitimate
 // shows up rather than loosening the check.
-const GLOBALS = new Set(['if','for','while','switch','catch','return','typeof','function',
+const GLOBALS = new Set(['true','false','null','undefined','NaN','Infinity','self','globalThis',
+  'let','const','var','break','continue','else','while','arguments',
+  'if','for','switch','catch','return','typeof','function',
   'setTimeout','setInterval','clearTimeout','clearInterval','parseInt','parseFloat','String',
   'Number','Boolean','Array','Object','JSON','Math','Date','Set','Map','RegExp','Error','Promise',
   'console','document','window','localStorage','navigator','fetch','alert','confirm','require',
   'isNaN','encodeURIComponent','decodeURIComponent','btoa','atob','structuredClone','Worker',
   'WebSocket','Blob','URL','performance','FileReader','Uint8Array','ArrayBuffer','TextDecoder',
-  'requestAnimationFrame','queueMicrotask','initSqlJs','import','super','this','await','new','delete','void',
+  'requestAnimationFrame','queueMicrotask','initSqlJs','location','indexedDB','import','super','this','await','new','delete','void',
   'do','else','try','finally','throw','yield','case','default','in','of','instanceof']);
 
 /**
@@ -60,7 +62,10 @@ function codeOnly(src){
 // the declaration that follows. Fixing that properly needs a tokeniser, which is more
 // machinery than this check is worth -- so the two casualties are named here instead, and
 // anything NEW that shows up is a real finding.
-const KNOWN_GOOD = new Set(['db.js:cleanKeyDesc', 'transport.js:NativeTransport']);
+const KNOWN_GOOD = new Set(['db.js:cleanKeyDesc', 'transport.js:NativeTransport',
+  // Short locals the crude collector cannot see: a labelled loop and a one-letter
+  // parameter. Named rather than loosened, so the check stays sharp for real finds.
+  'dinv.js:label', 'roomid.js:t']);
 
 let bad = 0;
 for(const f of files){
@@ -83,6 +88,15 @@ for(const f of files){
   add(/^[ \t]*(?:static\s+|async\s+|get\s+|set\s+)?(\w+)\s*\([^)\n]*\)\s*\{/gm);
   add(/\.\s*(\w+)\s*\(/g);                                     // method calls: not our problem
   add(/\bcatch\s*\(\s*(\w+)/g);
+  // A single-parameter arrow with no parentheses: `const shrink = hits => ...`.
+  add(/(?:^|[=(,:]|=>)\s*([a-zA-Z_$][\w$]*)\s*=>/g);
+  // Array destructuring, including in a for-of head: `for(const [fArea, fLocal] of froms)`.
+  for(const m of src.matchAll(/(?:const|let|var)\s*\[([^\]]*(?:\[[^\]]*\][^\]]*)*)\]/g)){
+    for(const part of m[1].split(',')){
+      const n = part.trim().replace(/^\.\.\./, '').replace(/[\[\]]/g, '');
+      if(n) declared.add(n);
+    }
+  }
   add(/(?:\(|,|\{)\s*(\w+)\s*(?=[,)}=])/g);                    // parameters and destructuring
   for(const m of src.matchAll(/import\s*\{([^}]+)\}\s*from/g)){
     for(const part of m[1].split(',')){
@@ -92,7 +106,23 @@ for(const f of files){
   }
   for(const m of src.matchAll(/import\s+(\w+)\s+from/g)) declared.add(m[1]);
 
+  // VARIABLES too, not just calls. The db.js split moved `const importedAreas` into
+  // roomid.js and left isAreaImported behind in db.js still reading it: a ReferenceError on
+  // every room.info, swallowed by the WebSocket handler's try/catch, so the client's idea of
+  // which room it was in simply froze -- and every route, area check and portal test after
+  // that was computed against a room the character had long since left. It looked like a
+  // pathfinding bug for an hour. This check only looked at `name(`, so it saw nothing.
+  //
+  // Only module-level SHOUTY_CASE and camelCase reads that appear in an obvious value
+  // position; deliberately narrow, because the alternative is drowning in locals.
   const seen = new Set();
+  for(const m of src.matchAll(/(?:^|[({[=,;]|return|&&|\|\|)\s*(?<![.\w$])([a-zA-Z_$][\w$]*)\s*(?=[.)\],;]|\s(?:instanceof|in))/g)){
+    const name = m[1];
+    if(declared.has(name) || seen.has(name) || KNOWN_GOOD.has(f + ':' + name)) continue;
+    seen.add(name);
+    console.log(`UNRESOLVED NAME: ${f} reads ${name} but never declares or imports it`);
+    bad++;
+  }
   for(const m of src.matchAll(/(?<![.\w$])([a-zA-Z_$][\w$]*)\s*\(/g)){
     const name = m[1];
     if(declared.has(name) || seen.has(name) || KNOWN_GOOD.has(f + ':' + name)) continue;

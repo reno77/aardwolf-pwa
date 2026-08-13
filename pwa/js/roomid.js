@@ -11,7 +11,7 @@
 // promoting a room once it is certain, and routing through the reference map while it is not.
 
 import { canonicalArea, cleanExitAction, gaardianDb, gaardianUid, importGaardianArea,
-         isAreaImported, persistDb, sqlDb } from './db.js';
+         isAreaImported, persistDb, sqlDb, IS_PROSE, UNTYPEABLE } from './db.js';
 import { appendOutput } from './ui.js';
 
 function liveExitsOf(uid){
@@ -146,10 +146,6 @@ export function promoteGaardianRoom(aardwolfUid, gaardianAreaid, gaardianLocalId
     }
   } catch(e){ console.error('promoteGaardianRoom error', e); }
 }
-
-// Areas whose Gaardian data is already in the local database. Backed by a table
-// so it survives a reload, and consulted before doing the work again.
-const importedAreas = new Set();
 
 
 
