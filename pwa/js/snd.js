@@ -434,7 +434,9 @@ function tryGetKeyThen(t, gate, resume){
   const keyName = gate && (gate.keyName || gate.key_name);
   if(keyName && !t?.keyringChecked){
     if(t) t.keyringChecked = true;
-    appendOutput('[S&D] a '+keyName+' is needed; checking the keyring first.\n','quest');
+    // No article: the map's key names carry their own ("a mine key"), and adding one
+    // printed "a a mine key is needed".
+    appendOutput('[S&D] '+keyName+' is needed; checking the keyring first.\n','quest');
     refreshKeyring(()=>{
       if(haveKey(keyName)){
         appendOutput('[S&D] "'+keyName+'" is already on your keyring, which the game checks\n'
