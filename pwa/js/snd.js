@@ -1288,17 +1288,42 @@ export function xcpRecall(t, onComplete, attempt, onFail){
           xcpRecall(t, onComplete, n, onFail);   // out of the area: portal again
           return;
         }
-        const exits = currentRoom.exits || [];
-        const pick = ['n','e','s','w','u','d'].find(d => exits.includes(d)) || exits[0];
-        if(!pick){
-          appendOutput('[S&D] and there is no exit to try from here.\n','error');
-          xcpAbandonTarget(t, 'stuck in a norecall room with no exits');
+        // Both refused, so this is not a bad ROOM -- it is an area that does not let
+        // you leave that way. The clan hall is the case that kept costing minutes: the
+        // portal is refused inside it and `recall` does nothing at all, because the
+        // clan hall IS the recall point. Walking out is the answer and there is no
+        // sense spending two more escalation rounds discovering that.
+        const out = sndState.walkedOut ? null : areaWayOut(currentRoom.area, null);
+        if(out){
+          sndState.walkedOut = true;
+          appendOutput('[S&D] neither the portal nor `recall` works in '
+            + (currentRoom.area||'this area')+'; walking out into '+out.toArea+'.\n','quest');
+          walkTo(out.uid, ()=>{
+            sendCmdRaw(out.dir);
+            setTimeout(()=>{ sndState.walkedOut = false; xcpRecall(t, onComplete, 0, onFail); }, 2500);
+          }, (why)=>{
+            sndState.walkedOut = false;
+            appendOutput('[S&D] could not reach the way out ('+why+'); stepping instead.\n','error');
+            stepAndRetry();
+          }, {ignoreName:true});
           return;
         }
-        appendOutput('[S&D] `recall` is refused here too -- stepping '+pick
-          + ' and trying again ('+n+'/'+RECALL_ATTEMPTS+').\n','quest');
-        sendCmdRaw(pick);
-        setTimeout(()=>{ if(sndState.pendingXcp === t) xcpRecall(t, onComplete, n, onFail); }, 2000);
+        stepAndRetry();
+
+        function stepAndRetry(){
+          const exits = currentRoom.exits || [];
+          const pick = ['n','e','s','w','u','d'].find(d => exits.includes(d)) || exits[0];
+          if(!pick){
+            appendOutput('[S&D] and there is no exit to try from here.\n','error');
+            if(onFail) onFail('stuck in a norecall room with no exits');
+            else xcpAbandonTarget(t, 'stuck in a norecall room with no exits');
+            return;
+          }
+          appendOutput('[S&D] `recall` is refused here too -- stepping '+pick
+            + ' and trying again ('+n+'/'+RECALL_ATTEMPTS+').\n','quest');
+          sendCmdRaw(pick);
+          setTimeout(()=>{ if(sndState.pendingXcp === t) xcpRecall(t, onComplete, n, onFail); }, 2000);
+        }
       }, 2600);
       return;
     }
