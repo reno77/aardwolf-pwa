@@ -13,6 +13,7 @@ import { errandFor, runErrand } from './errand.js';
 import { haveKey, refreshKeyring, stowKeys } from './keyring.js';
 import { dirWord, scanFor } from './scan.js';
 import { inPlane, leavePlane } from './plane.js';
+import { findRoomOrdinal } from './roomord.js';
 import { onInterval } from './ticker.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 import { noteArrival } from './plane.js';
@@ -3852,6 +3853,12 @@ function healBeforeFighting(t, resume){
 // ordinal, and the honest answer is to stop rather than clear the room.
 const QUEST_TAG_TRIES = 6;
 
+/** Ask roomord.js for the kill ordinal of THIS target in THIS room. */
+function lookForRoomOrdinal(t, then){
+  const kw = actionKw(t) || gmkw(t.mob);
+  findRoomOrdinal(t.mob, kw, (line)=>mobMatches(t.mob, line), then);
+}
+
 export function xcpKillTarget(t, forcedKw, onStillAlive, tagChecked){
   if(t.is_dead) return;
   // A QUEST target is only ever killed when the game has shown us the [Quest] tag
@@ -3916,6 +3923,19 @@ export function xcpKillTarget(t, forcedKw, onStillAlive, tagChecked){
   // asked the game for a copy the code already knew did not exist. Once the count
   // is known, honour it: retries then re-attack the one copy, which is what makes
   // a mob that fled at wimpy die on the next pass.
+  // Which copy in THIS ROOM is the target? Look and count.
+  //
+  // `kill` numbers the mobs in the room that answer to the keyword, and Svrogan's
+  // Logging Camp is full of things that answer to `ironwood`: a swaying Ironwood
+  // susurrant, a whispering Ironwood elder, a creaking Ironwood sentinel, and the
+  // campaign's own "A creaking Ironwood". A plain `kill ironwood` took whichever was
+  // first, so the campaign mob stood there while its neighbours died, and the hunt
+  // trick could not help -- its copy 8 is an AREA ordinal, and kill does not share that
+  // numbering. Reading the room gives the one number that does mean something here.
+  if(!forcedKw && !t.isQuest){
+    lookForRoomOrdinal(t, (ordKw)=>xcpKillTarget(t, ordKw, onStillAlive, tagChecked));
+    return;
+  }
   const known = (t.whereInstances && t.whereInstances.length) || 0;
   const cap = known > 0 ? known : 8;
   let targetKw = forcedKw;

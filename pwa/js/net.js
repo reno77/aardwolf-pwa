@@ -17,6 +17,7 @@ import { commandMap } from './state.js';
 import { doXq, parseQuestRoomOutput, questInfo } from './quest.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
 import { cleanKeyring, parseKeyringOutput, showKeyring } from './keyring.js';
+import { parseRoomOrdinalOutput } from './roomord.js';
 import { parseScanOutput } from './scan.js';
 import { openTransport } from './transport.js';
 import { setSyncBase, setSyncToken, syncBase, syncMap, syncOnLogin, syncReset,
@@ -543,6 +544,7 @@ export function handleMessage(msg){
       parseEntryItemOutput(msg.text);  // readying a held portal such as the amulet
       parseRecallOutput(msg.text);     // did a step of the recall sequence get refused
       parseScanOutput(msg.text);       // what is standing in the neighbouring rooms
+      parseRoomOrdinalOutput(msg.text); // which copy in this room is the target
       parseKeyringOutput(msg.text);    // which keys we already carry
       processTriggers(msg.text); parseWhereOutput(msg.text); parseHuntOutput(msg.text); checkQuest(msg.text);
       break;
