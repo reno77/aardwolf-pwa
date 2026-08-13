@@ -24,6 +24,13 @@ export let charMaxMoves = 0;
 /** 1 when unknown, so a missing vitals feed never blocks anything. */
 export function hpFraction(){ return charMaxHp > 0 ? charHp / charMaxHp : 1; }
 export function manaFraction(){ return charMaxMana > 0 ? charMana / charMaxMana : 1; }
+/**
+ * Movement, which nothing checked until a campaign run ground to a halt on 37 points of
+ * 3129. Walking costs moves; at zero the character simply does not go, so every walk failed,
+ * the escape could not step out of the room it was in, and the run read all of it as "the
+ * portal did not fire" and "cannot go that way".
+ */
+export function movesFraction(){ return charMaxMoves > 0 ? charMoves / charMaxMoves : 1; }
 
 /**
  * Take the vitals from the PROMPT as well as from GMCP.

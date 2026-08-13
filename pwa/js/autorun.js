@@ -12,7 +12,8 @@
 // find and kill mob" as botting, and a loop that walks target to target without a human in
 // it is exactly that. It is off by default and only /xcpauto turns it on.
 
-import { currentRoom, charState, hpFraction, manaFraction, STATE_FIGHTING } from './gmcp.js';
+import { currentRoom, charState, hpFraction, manaFraction, movesFraction,
+         STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
 import { isWalking } from './nav.js';
 import { campaignTargets, doCpCheck, liveTargets, sndState, xcpAbandonTarget,
@@ -43,6 +44,7 @@ const AUTO_ROUNDS = 8;           // how many times to come back before giving up
 const REST_BELOW = 0.75;        // rest before the next target below this health
 const REST_UNTIL = 0.95;
 const REST_MANA  = 0.4;         // ...or this much mana
+const REST_MOVES = 0.25;        // ...or this much movement: at zero it cannot walk at all
 const REST_TRIES = 40;          // ~5 minutes of ticks
 
 export function setAutoRun(on){
@@ -84,12 +86,12 @@ export function setAutoRun(on){
 
 /** Rest to a fighting state before starting anything, then run `fn`. */
 function recoverThen(fn, tries){
-  const hp = hpFraction(), mana = manaFraction();
+  const hp = hpFraction(), mana = manaFraction(), moves = movesFraction();
   // Once resting has started, rest properly: getting back to 75% and standing up
   // means the next fight starts a quarter down, and the fight after that starts
   // lower again. Only the decision to START resting uses the lower number.
   const need = tries ? REST_UNTIL : REST_BELOW;
-  if(hp >= need && mana >= REST_MANA){
+  if(hp >= need && mana >= REST_MANA && moves >= REST_MOVES){
     sndState.autoResting = false;
     sndState.autoRestingSince = 0;
     sndState.autoRestMode = null;

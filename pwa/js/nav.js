@@ -23,7 +23,7 @@ import { gaardianCandidateUids, gaardianPath, reconnectDanglingExits } from './r
 import { parseKeySource } from './keys.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,
-         STATE_RUNNING } from './gmcp.js';
+         STATE_RUNNING, movesFraction, charMoves, charMaxMoves } from './gmcp.js';
 import { queueMove, sendCmdRaw, setWalkCanceller } from './net.js';
 import { errandFor, runErrand } from './errand.js';
 import { appendOutput } from './ui.js';
@@ -425,6 +425,16 @@ export function walkTo(targetUid, onDone, onFail, opts){
     return false;
   }
   if(currentRoom.uid === targetUid){ if(onDone) onDone(); return true; }
+  // Can we afford to walk at all? Movement costs moves, and at zero the character simply
+  // does not go: every step fails, and the failures read as map errors -- "cannot go that
+  // way", "the portal did not fire" -- while the real answer was 37 points of 3129. Say the
+  // true thing instead, so the caller can rest rather than re-plan.
+  if(movesFraction() < 0.02){
+    appendOutput('[nav] no movement points left ('+charMoves+'/'+charMaxMoves
+      + ') -- rest or sleep before walking anywhere.\n','error');
+    if(onFail) onFail('out of movement points');
+    return false;
+  }
 
   let plan = planRoute(currentRoom.uid, targetUid);
   if(plan.path === null){
