@@ -2272,7 +2272,12 @@ export function xcpStep(t){
     // its namesakes and reported her missing, when what the game meant was "somewhere in
     // this area". If the location names an area, it is an area: let `where` and the hunt
     // trick do their job.
-    const locIsArea = !!(t.rawLoc && findAreaAnywhere(t.rawLoc));
+    // lookupArea is the oracle: it returns an entry for anything, but marks one it had
+    // to invent a keyword for as `guessed`. A real area name is one the game's own
+    // `areas` list knows -- findAreaAnywhere only matches local area KEYS ('aardington'),
+    // never display names, so it answered null here and the test never fired.
+    const locArea = t.rawLoc ? lookupArea(t.rawLoc) : null;
+    const locIsArea = !!(locArea && !locArea.guessed);
     if((t.isQuest || (t.type === 'room' && !locIsArea)) && (t.roomUid || questRoomHere)){
       t.located = true;
       // The sweep needs the quest's room NAME even when we are standing somewhere
