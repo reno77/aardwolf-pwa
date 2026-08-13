@@ -230,6 +230,7 @@ const KEY_IS_NOSTEAL = /\bnosteal\b|cannot be stolen/i;
 const STEAL_OK       = /you (?:steal|got|now have)\b|you successfully (?:steal|pilfer)/i;
 const STEAL_FAILED   = /you failed|oops|fumble|couldn'?t find|nothing to steal|too (?:aware|alert)/i;
 const STEAL_TRIES    = 3;
+const KEY_FIGHT_MS   = 120000;   // how long a key mob may take to die before we give up
 
 /** Does this reply show the key on the mob? */
 function keyLooksPresent(text, keyName){
@@ -411,6 +412,14 @@ export function parseKeyMobOutput(text){
       appendOutput('[S&D] stealing is not working; killing '+st.mob+' for '
         + (st.keyName||'the key')+'.\n','quest');
       sendCmd('kill ' + st.kw);
+      return;
+    }
+    // A fight is not a lost mob either. Jereck took longer than twenty seconds to kill --
+    // three failed pickpockets first, and he fights back -- so the deadline ended the
+    // errand while the character was still swinging, and the key stayed on a mob that was
+    // about to drop it. Combat is its own evidence that this is still working.
+    if(st.stage === 'kill' && charState === STATE_FIGHTING
+       && Date.now() - st.ts < KEY_FIGHT_MS){
       return;
     }
     giveUpOnKeyMob(st, 'lost track of '+st.mob);
