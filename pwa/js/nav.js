@@ -24,6 +24,7 @@ import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,
          STATE_RUNNING } from './gmcp.js';
 import { queueMove, sendCmdRaw, setWalkCanceller } from './net.js';
+import { errandFor, runErrand } from './errand.js';
 import { appendOutput } from './ui.js';
 
 // =============================================================================
@@ -678,8 +679,30 @@ function step(){
     finish(false, 'movement timed out in ' + (currentRoom.name || '?'));
   }, STEP_TIMEOUT_MS);
 
-  if(isCustomExit(dir)) sendCmdRaw(dir);
+  if(isCustomExit(dir)) sendCustomExit(dir);
   else queueMove(dir, {fromWalker:true});
+}
+
+/**
+ * Send a custom exit, which may be SEVERAL commands.
+ *
+ * The reference map writes a multi-step exit with semicolons -- the Keep of the
+ * Asherodan's elevator is `hold 'steel crank';turn crank` -- and Aardwolf does not
+ * treat `;` as a separator. Sent whole, the MUD read it as one command and answered:
+ *
+ *     > hold 'steel crank';turn crank
+ *     Your race does not have a ;turn crank wear location.
+ *
+ * so the exit could never work, whatever we were carrying. Split and sent one at a
+ * time, `hold 'steel crank'` takes the crank and `turn crank` raises the elevator.
+ * 786 exits in the reference map are arbitrary commands and this affects every one
+ * of them that has more than a single step.
+ */
+function sendCustomExit(dir){
+  const parts = String(dir).split(';').map(s => s.trim()).filter(Boolean);
+  if(parts.length < 2){ sendCmdRaw(dir); return; }
+  let d = 0;
+  for(const p of parts){ setTimeout(()=>sendCmdRaw(p), d); d += 800; }
 }
 
 /** Called from gmcp.js on every room.info. */
@@ -851,12 +874,11 @@ export function onMudText(text){
     if(b.missingItem){
       if(!isCustomExit(walk.lastDir)) continue;
       const item = neededItem(walk.lastDir);
-      // Try to pick it up before writing the exit off. These items are usually
-      // lying in the room the exit leaves from -- the Keep of the Asherodan's
-      // `hold 'steel crank';turn crank` is a crank on the elevator floor -- and one
-      // `get` is much cheaper than routing around, which in the Keep meant six
-      // re-paths and then "there is no way round it". Once per exit: if the item is
-      // not here, it is not here.
+      // Try to pick it up before writing the exit off. Some of these items lie in
+      // the room the exit leaves from, and one `get` is much cheaper than routing
+      // around -- which in the Keep of the Asherodan meant six re-paths and then
+      // "there is no way round it". Once per exit: if the item is not here, it is
+      // not here.
       const tag = walk.lastFrom + '|' + walk.lastDir;
       if(item && !walk.gotTried) walk.gotTried = new Set();
       if(item && !walk.gotTried.has(tag)){
@@ -866,6 +888,38 @@ export function onMudText(text){
         sendCmdRaw('get ' + itemKw(item));
         clearStepTimer();
         walk.timer = setTimeout(step, 900);
+        return;
+      }
+      // Not here, but we may know where it IS. A recipe says which room and what to
+      // do there; go and do it, then walk the original route again. The Keep's steel
+      // crank is the case that needed this: it is two floors away in a room full of
+      // aggressive vines, and no rule derives that from the exit string.
+      const recipe = item && !walk.errandTried ? errandFor(currentRoom.area, item) : null;
+      if(recipe){
+        walk.errandTried = true;
+        const resume = {uid: walk.targetUid, onDone: walk.onDone, onFail: walk.onFail};
+        // Take the callbacks off the walk before cancelling it, or the cancel reports
+        // the route as failed and whatever asked for it gives up: watched live, the
+        // errand announced it was going for the crank and the campaign abandoned
+        // Johnette in the same second, for "could not reach the target room
+        // (fetching steel crank)".
+        walk.onFail = null;
+        walk.onDone = null;
+        cancelWalk('fetching '+item);
+        runErrand(recipe,
+          (roomName, ok, no) => {
+            const room = resolveNavName(roomName);
+            if(!room){ no('no room called '+roomName+' in the map'); return; }
+            walkTo(room.uid, ok, no, {ignoreName:true});
+          },
+          ()=>{
+            appendOutput('[errand] got what the exit wanted; walking the route again.\n','quest');
+            walkTo(resume.uid, resume.onDone, resume.onFail, {ignoreName:true});
+          },
+          (why)=>{
+            appendOutput('[errand] could not fetch '+item+' ('+why+').\n','error');
+            if(resume.onFail) resume.onFail('that way needs "'+item+'" and fetching it failed: '+why);
+          });
         return;
       }
       // The route is real, we just cannot use it -- so park the exit at level 999

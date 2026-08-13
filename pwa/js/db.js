@@ -229,6 +229,7 @@ export async function initDb() {
 
   seedAreas();   // minimal area keyword seed; /areas harvests the real list
   seedEntryHints();  // entries whose own note does not describe the last step
+  unparkItemExits();  // a missing item is a fact about the moment, not about the map
   initInventory();
 
   // Load Gaardian map database (read-only reference, not persisted with user data)
@@ -1969,4 +1970,26 @@ export async function importDb(){
     renderRooms();
   };
   input.click();
+}
+
+/**
+ * Let item-gated exits be routed through again.
+ *
+ * The walker parks an exit at level=999 when the command needs an item we are not
+ * carrying, so it can look for another way instead of stopping. That is the right
+ * call in the moment and the wrong thing to remember: once the item is in the pack
+ * the exit is the best route there is, and nothing ever cleared the mark.
+ *
+ * Watched live in the Keep of the Asherodan. With the steel crank finally carried,
+ * the only route to Below the Green Chamber -- `hold 'steel crank';turn crank` --
+ * was still excluded, so the pathfinder reached for a plain `n` that does not exist
+ * until the crank turns, failed six times and deleted it. Item-gated exits are the
+ * ones whose command quotes the item, which is how the reference map writes them.
+ */
+export function unparkItemExits(){
+  if(!sqlDb) return 0;
+  try {
+    sqlDb.run("UPDATE exits SET level=0 WHERE level=999 AND dir LIKE '%''%'");
+    return sqlDb.getRowsModified ? sqlDb.getRowsModified() : 0;
+  } catch(e){ console.error('unparkItemExits', e); return 0; }
 }
