@@ -6,11 +6,14 @@ import { showFullMap } from './map.js';
 import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
          parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, parseFollowMoveOutput,
-         parseIdentifyOutput, parseWhereOrdOutput, parseKeyFetchOutput, parseKeyMobOutput,
-         parseEntryItemOutput, parseRecallOutput,
+         parseIdentifyOutput, parseWhereOrdOutput,
+         parseRecallOutput,
          huntTo, stopAutoHunt,
-         setXcpMode, setAutoRun, requestCampaign, setQuestmasterRoom, questmasterRoom,
+         setXcpMode, requestCampaign, setQuestmasterRoom, questmasterRoom,
          sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
+import { setAutoRun } from './autorun.js';
+import { parseKeyFetchOutput, parseKeyMobOutput } from './keyfetch.js';
+import { parseEntryItemOutput } from './pools.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { commandMap } from './state.js';
