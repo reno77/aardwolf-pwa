@@ -35,25 +35,76 @@ const GLOBALS = new Set(['true','false','null','undefined','NaN','Infinity','sel
  * anyone reading it to ignore the whole check.
  */
 function codeOnly(src){
-  // STRINGS FIRST, then comments. The other order lets a `//` or `/*` inside a string
-  // literal start a comment that runs to the end of the line -- or to the next `*/`
-  // hundreds of lines later, swallowing real declarations. That is not hypothetical: it hid
-  // `function cleanKeyDesc` in db.js and a whole hook object in quest.js, and the check then
-  // reported them as missing functions.
-  return src
-    .replace(/`(?:\\.|[^`\\])*`/g, '``')    // template literals
-    .replace(/'(?:\\.|[^'\\\n])*'/g, "''")
-    .replace(/"(?:\\.|[^"\\\n])*"/g, '""')
-    // Block comments become the same NUMBER OF LINES, not one space: collapsing a
-    // twelve-line docstring joins the code above it to the code below, and every
-    // line-anchored pattern below then misses the declaration that follows. That is what hid
-    // quest.js's `tagGate(...)` and db.js's `function cleanKeyDesc` from this very check.
-    .replace(/\/\*[\s\S]*?\*\//g, m => '\n'.repeat((m.match(/\n/g) || []).length))
-    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')  // line comments, but not the // in a URL
-    // Regex literals, which are full of prose in this codebase: /you (?:hold|wield)/ read as
-    // a call to you(). Only where a regex can legally start, so division survives.
-    .replace(/([=(,\[:!&|?]|\breturn|\bcase)(\s*)\/(?![*\/])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^\/\\\n])+\/[gimsuy]*/g,
-             (m, pre, ws) => pre + ws + '/RE/');
+  // A single left-to-right scan, not a pile of regexes.
+  //
+  // The regex version had to choose an order and lost either way: strings first, and an
+  // apostrophe in a comment ("Gaardian's own route") opens a string that runs to the next
+  // apostrophe, swallowing whatever is between; comments first, and a `//` inside a string
+  // literal eats the rest of the line. It was the first failure that mattered -- it hid
+  // roomid.js's `GAARDIAN_DIRS[type]`, so this check passed while gaardianPath() threw a
+  // ReferenceError on every call, and the walker stopped mid-route in silence.
+  //
+  // Scanning cannot make that mistake: whether a quote opens a string depends on the state
+  // when it is reached, which is exactly what the regexes could not know.
+  let out = '';
+  const n = src.length;
+  // Whether a `/` opens a regex or divides depends on the token before it, which is the
+  // other thing only a scan can know. Regexes must be handled HERE rather than afterwards:
+  // this codebase is full of patterns like /^You don't have/ and /it's closed/, and an
+  // apostrophe inside one would otherwise open a string and eat the code that follows.
+  const REGEX_MAY_START = /[(,=:[!&|?{};+\-*%~^<>]$|\b(?:return|case|typeof|instanceof|in|of|new|delete|void|do|else|yield|await)$/;
+  for(let i = 0; i < n; i++){
+    const c = src[i], c2 = src[i + 1];
+    if(c === '/' && c2 !== '/' && c2 !== '*' && REGEX_MAY_START.test(out.trimEnd())){
+      i++;
+      for(; i < n; i++){
+        if(src[i] === '\\'){ i++; continue; }
+        if(src[i] === '['){                            // a class may hold an unescaped /
+          for(i++; i < n && src[i] !== ']'; i++) if(src[i] === '\\') i++;
+          continue;
+        }
+        if(src[i] === '/' || src[i] === '\n') break;
+      }
+      while(i + 1 < n && /[gimsuy]/.test(src[i + 1])) i++;
+      out += '/RE/';
+      continue;
+    }
+    if(c === '/' && c2 === '/'){                       // line comment
+      while(i < n && src[i] !== '\n') i++;
+      out += '\n';
+      continue;
+    }
+    if(c === '/' && c2 === '*'){                       // block comment
+      i += 2;
+      // Keep the line count: collapsing a twelve-line docstring joins the code above it to
+      // the code below, and every line-anchored pattern here then misses the declaration.
+      let nl = '';
+      for(; i < n; i++){
+        if(src[i] === '\n') nl += '\n';
+        if(src[i] === '*' && src[i + 1] === '/'){ i++; break; }
+      }
+      out += nl;
+      continue;
+    }
+    if(c === '"' || c === "'" || c === '`'){           // string / template literal
+      const q = c;
+      i++;
+      let nl = '';
+      for(; i < n; i++){
+        if(src[i] === '\\'){ i++; continue; }
+        if(src[i] === '\n'){
+          nl += '\n';
+          if(q !== '`') break;                         // unterminated: it was an apostrophe
+          continue;
+        }
+        if(src[i] === q) break;
+      }
+      out += q + q + nl;
+      continue;
+    }
+    out += c;
+  }
+  return out;
 }
 
 // Known good, and why. Both are declared in the same file, and both are hidden from the
@@ -116,7 +167,11 @@ for(const f of files){
   // Only module-level SHOUTY_CASE and camelCase reads that appear in an obvious value
   // position; deliberately narrow, because the alternative is drowning in locals.
   const seen = new Set();
-  for(const m of src.matchAll(/(?:^|[({[=,;]|return|&&|\|\|)\s*(?<![.\w$])([a-zA-Z_$][\w$]*)\s*(?=[.)\],;]|\s(?:instanceof|in))/g)){
+  // The follow-set includes `[` because an INDEX read is how the second casualty of the same
+  // split hid: roomid.js used `GAARDIAN_DIRS[type]`, declared only in db.js. gaardianPath()
+  // therefore threw on every call -- and it is called from inside the walker's own setTimeout,
+  // so the throw took the step timer with it and the walk simply stopped, mid-route, silently.
+  for(const m of src.matchAll(/(?:^|[({[=,;]|return|&&|\|\|)\s*(?<![.\w$])([a-zA-Z_$][\w$]*)\s*(?=[.)\],;[]|\s(?:instanceof|in))/g)){
     const name = m[1];
     if(declared.has(name) || seen.has(name) || KNOWN_GOOD.has(f + ':' + name)) continue;
     seen.add(name);

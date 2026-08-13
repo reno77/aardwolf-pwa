@@ -35,8 +35,9 @@ import { appendOutput, stripAnsi } from './ui.js';
 import { currentRoom } from './gmcp.js';
 import { findTagged, lookLanded, mobWordsFrom } from './questtag.js';
 import { sendCmd } from './net.js';
-import { cancelWalk, isWalking } from './nav.js';
-import { actionKw, gmkw, huntTrickKw, whereKeywords, sndState, setQuestHooks, xcpStep } from './snd.js';
+import { cancelWalk, isWalking, walkTo } from './nav.js';
+import { actionKw, gmkw, huntTrickKw, whereKeywords, sndState, setQuestHooks, xcpRecall,
+         xcpStep } from './snd.js';
 
 /**
  * Everything the game has told us about the current quest.
@@ -94,6 +95,13 @@ export function noticeQuest(data){
     remember(data, 'active');
     paint();
     describe(action === 'start' ? 'new quest' : 'on a quest');
+    // /xq asked for this one, so go and do it rather than making the player type
+    // the same command a second time. This is the whole point of asking.
+    if(awaitingQuest){
+      awaitingQuest = null;
+      appendOutput('[quest] got one -- going after it.\n','quest');
+      setTimeout(doXq, 400);
+    }
     return;
   }
   if(action === 'status' && status === 'ready'){
@@ -225,6 +233,158 @@ function askGame(){
   sendCmd('quest info');
 }
 
+// ---------------------------------------------------------------------------
+// getting a quest in the first place
+// ---------------------------------------------------------------------------
+//
+// `/xq` used to stop dead at "no quest target on record", print `quest info` and
+// leave the asking to a human -- and `quest info` answers "You do not have to wait
+// to go on another quest", which is not a quest, just permission to ask for one.
+// So the one command whose whole job is "go and do a quest" could not start one.
+//
+// Requesting is two steps on Aardwolf and the second is easy to miss: `quest
+// request` gets the assignment, and the questmaster only speaks it in TEXT --
+// comm.quest follows, which is what actually drives /xq, so the wait is for GMCP
+// rather than for the sentence.
+const QUEST_READY   = /^You do not have to wait to go on another quest/im;
+const QUEST_WAIT    = /^You must wait (\d+) more minutes? until you can go on another quest/im;
+// "You are already on a quest!" -- asking again would be harmless but the reply is
+// worth reading, because it means our idea of the state was wrong.
+const QUEST_ALREADY = /^You are already on a quest/im;
+const QUEST_NOTHING = /^(?:You are not on a quest|There are no quests available)/im;
+// The one that stopped this dead in play: quests are handed out in person.
+const QUEST_NOMASTER = /^You need to be at a questmaster/im;
+
+// Where a questmaster is. Aylor's is Questor, "Among the Philosophes", and the
+// portal sequence already lands in Aylor -- so the client can get itself there
+// without being told. The room is confirmed each time with `where questmaster`
+// rather than hard-coded: `where` is authoritative inside the area we are in,
+// and this way a different questmaster in a different city works unchanged.
+const QUESTMASTER_AREA = /aylor/i;
+// `where` prints name and room in fixed columns.
+const WHERE_ROW = /^(\S.{0,29}?)\s{2,}(\S.*?)\s*$/;
+
+// Set while /xq is waiting for a quest it asked for, so the parser below only acts
+// on replies this client provoked -- typing `quest info` by hand must not suddenly
+// commit the character to a quest.
+let awaitingQuest = null;
+
+/** Ask for a quest, then run /xq on whatever comes back. */
+function requestQuest(why){
+  awaitingQuest = { at: Date.now(), why: why || '' };
+  appendOutput('[quest] no quest running -- asking the questmaster for one.\n','quest');
+  sendCmd('quest request');
+  // comm.quest normally arrives within a second or two. If it does not, say so
+  // rather than leaving /xq looking hung.
+  setTimeout(() => {
+    // Travelling to a questmaster takes longer than any reply does, and killing
+    // the request half way there would strand the walk with nothing waiting on it.
+    if(!awaitingQuest || awaitingQuest.travelling || awaitingQuest.locating) return;
+    awaitingQuest = null;
+    if(quest.state !== 'active'){
+      appendOutput('[quest] asked for a quest but the game sent no target. `quest info`\n'
+        + '        to see what it says, then /xq again.\n','error');
+    }
+  }, 12000);
+}
+
+/**
+ * Go and stand next to a questmaster, because quests are handed out in person.
+ *
+ * "You need to be at a questmaster, Bedokman." is where /xq stopped the first time
+ * it could ask at all. The route has two halves and the client already owns both:
+ * the portal sequence lands in Aylor, and `where` inside an area is authoritative
+ * about which room a mob is in. So: portal if we are somewhere else, ask where the
+ * questmaster is, walk there, ask again.
+ */
+function goToQuestmaster(){
+  if(!QUESTMASTER_AREA.test(String(currentRoom.area || ''))){
+    appendOutput('[quest] quests are given in person -- portalling to Aylor first.\n','quest');
+    xcpRecall(null, () => { if(awaitingQuest) locateQuestmaster(); },
+              0, (why) => {
+                awaitingQuest = null;
+                appendOutput('[quest] could not get to Aylor ('+(why||'?')+'), so no quest.\n','error');
+              });
+    return;
+  }
+  locateQuestmaster();
+}
+
+function locateQuestmaster(){
+  if(!awaitingQuest) return;
+  awaitingQuest.locating = true;
+  appendOutput('[quest] asking the game where the questmaster is.\n','quest');
+  sendCmd('where questmaster');
+}
+
+function walkToQuestmaster(roomName){
+  if(!awaitingQuest) return;
+  const room = resolveRoomByNameAnywhere(roomName, currentRoom.area || '');
+  if(!room){
+    awaitingQuest = null;
+    appendOutput('[quest] the questmaster is in "'+roomName+'", which is not in the map.\n','error');
+    return;
+  }
+  appendOutput('[quest] the questmaster is in '+roomName+'; walking there.\n','quest');
+  walkTo(room.uid, () => {
+    if(!awaitingQuest) return;
+    // Standing next to one now, so the request that was refused will be answered.
+    awaitingQuest.travelling = false;
+    sendCmd('quest request');
+  }, (why) => {
+    awaitingQuest = null;
+    appendOutput('[quest] could not reach the questmaster ('+(why||'?')+').\n','error');
+  });
+}
+
+/** Feed MUD output here: the replies to `quest info` and `quest request`. */
+export function parseQuestStatusOutput(text){
+  if(!awaitingQuest) return;
+  const s = stripAnsi(text);
+  const wait = s.match(QUEST_WAIT);
+  if(wait){
+    awaitingQuest = null;
+    appendOutput('[quest] the game says '+wait[1]+' more minute'+(wait[1]==='1'?'':'s')
+      + ' before another quest is allowed.\n','quest');
+    return;
+  }
+  if(QUEST_ALREADY.test(s)){
+    awaitingQuest = null;
+    appendOutput('[quest] the game says a quest is already running; asking what it is.\n','quest');
+    askGame();
+    return;
+  }
+  if(QUEST_NOTHING.test(s)){
+    awaitingQuest = null;
+    appendOutput('[quest] the game has no quest to give right now.\n','quest');
+    return;
+  }
+  if(QUEST_NOMASTER.test(s)){
+    if(!awaitingQuest.travelling){
+      awaitingQuest.travelling = true;
+      goToQuestmaster();
+    }
+    return;
+  }
+  // The reply to the `where questmaster` this module sent: one row, the mob and
+  // the room it is standing in.
+  if(awaitingQuest.locating){
+    for(const line of s.split(/\r?\n/)){
+      const m = line.match(WHERE_ROW);
+      if(!m || !/quest/i.test(m[1])) continue;
+      awaitingQuest.locating = false;
+      walkToQuestmaster(m[2]);
+      return;
+    }
+  }
+  // "You do not have to wait" is the answer to `quest info` when nothing is
+  // running: permission, not an assignment. Turn it into the request.
+  if(QUEST_READY.test(s) && !awaitingQuest.requested){
+    awaitingQuest.requested = true;
+    sendCmd('quest request');
+  }
+}
+
 /**
  * `/xq` -- take the quest target and run it through the campaign pipeline.
  *
@@ -243,8 +403,11 @@ export function doXq(){
     return;
   }
   if(quest.state !== 'active' || !quest.mob){
-    appendOutput('[quest] no quest target on record. `quest info` (or /quest) first;\n'
-      + '        the game sends the target, room and area over GMCP when it answers.\n','error');
+    // Ask for one, rather than telling the player to. `quest info` on its own
+    // answers "You do not have to wait to go on another quest" -- permission, not
+    // an assignment -- so /xq used to stop one step short of having a quest to do,
+    // which is the only thing it exists for.
+    requestQuest('/xq with nothing running');
     askGame();
     return;
   }

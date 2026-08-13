@@ -10,7 +10,7 @@
 // new is learned. Everything here is about that: recording anchors, narrowing candidates,
 // promoting a room once it is certain, and routing through the reference map while it is not.
 
-import { canonicalArea, cleanExitAction, gaardianDb, gaardianUid, importGaardianArea,
+import { canonicalArea, cleanExitAction, GAARDIAN_DIRS, gaardianDb, gaardianUid, importGaardianArea,
          isAreaImported, persistDb, sqlDb, IS_PROSE, UNTYPEABLE } from './db.js';
 import { appendOutput } from './ui.js';
 

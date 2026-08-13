@@ -17,7 +17,8 @@ import { parseEntryItemOutput } from './pools.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { commandMap } from './state.js';
-import { doXq, parseQuestRoomOutput, questInfo } from './quest.js';
+import { doXq, parseQuestRoomOutput, parseQuestStatusOutput, questInfo } from './quest.js';
+import { noteRoomChars } from './questtag.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
 import { cleanKeyring, parseKeyringOutput, showKeyring } from './keyring.js';
 import { parseRoomOrdinalOutput } from './roomord.js';
@@ -543,7 +544,9 @@ export function handleMessage(msg){
       parseWhereOrdOutput(msg.text);   // and where that copy is
       parseKeyFetchOutput(msg.text);   // did the key actually come out of the box
       parseKeyMobOutput(msg.text);     // ...or off the mob that was carrying it
+      noteRoomChars(msg.text);         // who is standing here, for the door-guard case
       parseQuestRoomOutput(msg.text);  // which copy here wears the [Quest] tag
+      parseQuestStatusOutput(msg.text); // may we have a quest, and did we get one
       parseEntryItemOutput(msg.text);  // readying a held portal such as the amulet
       parseRecallOutput(msg.text);     // did a step of the recall sequence get refused
       parseScanOutput(msg.text);       // what is standing in the neighbouring rooms

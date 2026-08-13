@@ -599,7 +599,7 @@ export function importGaardianArea(gaardianAreaid, aardwolfAreaName, force){
 //   random          = the exit leads somewhere unpredictable
 // The old importer handled only 0..6 and dropped every type 7, which left 310
 // rooms reachable by no imported edge at all.
-const GAARDIAN_DIRS = {0:'n', 1:'e', 2:'s', 3:'w', 4:'u', 5:'d'};
+export const GAARDIAN_DIRS = {0:'n', 1:'e', 2:'s', 3:'w', 4:'u', 5:'d'};
 
 // exit_action is mostly a command, but a few rows are prose describing how the
 // exit works rather than something you can type. Import those with level 999 so

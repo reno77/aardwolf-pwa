@@ -1262,7 +1262,16 @@ export function xcpStep(t){
       // at level 86 is Jenny's Tavern (50-100), not the Amusement Park's Bumper Cars
       // (5-20) -- which is where five attempts went, proving the elf was not there.
       const candidates = gaardianAreasWithRoom(t.rawLoc || t.roomName);
-      if(candidates.length > 1 && charLevel){
+      // ...but a QUEST is not guesswork. comm.quest carries mob, room AND area as
+      // three separate fields, so the area is known before we start. Guessing over
+      // the top of it is worse than useless: "Guard Room" exists in seven areas, the
+      // level filter picked The Fabled City of Stone, and the walk went to the
+      // Citadel gate -- where the Gate Keepers are aggressive and took the character
+      // apart over three visits -- while the game had plainly said The Yurgach
+      // Domain. The heuristic exists for `cp check`, which gives a room and no area;
+      // it must never overrule a source that gave one.
+      const areaIsAuthoritative = !!(t.isQuest && t.areaName);
+      if(candidates.length > 1 && charLevel && !areaIsAuthoritative){
         const fits = candidates.filter(c => c.low != null
           && charLevel >= c.low && charLevel <= c.high
           && (c.minLevel == null || charLevel >= c.minLevel));

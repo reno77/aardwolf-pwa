@@ -23,9 +23,10 @@ import { gaardianCandidateUids, gaardianPath, reconnectDanglingExits } from './r
 import { parseKeySource } from './keys.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,
-         STATE_RUNNING, movesFraction, charMoves, charMaxMoves } from './gmcp.js';
-import { queueMove, sendCmdRaw, setWalkCanceller } from './net.js';
+         STATE_RUNNING, movesFraction, charMoves, charMaxMoves, hpFraction, manaFraction } from './gmcp.js';
+import { queueMove, sendCmd, sendCmdRaw, setWalkCanceller } from './net.js';
 import { errandFor, runErrand } from './errand.js';
+import { lastRoomChars } from './questtag.js';
 import { appendOutput } from './ui.js';
 
 // =============================================================================
@@ -234,6 +235,47 @@ function keyRowFor(uid, dir){
   return null;
 }
 
+// Mobs that are standing there because of the door. Aardwolf writes them into the
+// room the same way every time: "An ugly looking Yurgach stands on guard before the
+// gate", "A Gate Keeper is here, guarding the Citadel entrance".
+const DOORKEEPER = /\b(?:guard(?:s|ing|ed)?|sentry|sentries|keeper|watch(?:man|men)|doorman|gatekeeper)\b/i;
+// Words that are description, not something `kill` will match.
+const NOT_A_KEYWORD = new Set(['a','an','the','is','are','here','stands','stand','standing',
+  'on','before','guard','guarding','guards','looking','ugly','before','at','in','of','this',
+  'his','her','their','with','and','you','it','to','from','by','who','that']);
+
+/**
+ * No key note in the map, but something in this room is guarding the way.
+ *
+ * 882 exits carry a Gaardian key note and the rest carry nothing at all -- the
+ * black gate into the Yurgach Domain's Black Tower is one of the silent ones, and
+ * the room says out loud what the map does not: "unless you carry the key, you can
+ * go no further", with two Yurgach standing on guard in front of it. The mob in the
+ * room is the lead, so hand it to the key machinery as one: it already knows how to
+ * kill a holder and loot the corpse, which matters here more than usual because the
+ * keys in this area rot within a couple of ticks of the kill.
+ */
+function gateFromRoom(dir){
+  const lines = lastRoomChars();
+  for(const line of lines){
+    const text = String(line || '');
+    if(!DOORKEEPER.test(text)) continue;
+    const words = (text.toLowerCase().match(/[a-z]+/g) || [])
+      .filter(w => w.length > 2 && !NOT_A_KEYWORD.has(w));
+    if(!words.length) continue;
+    // The distinctive word, which for a mob name is the longest one: "yurgach"
+    // out of "an ugly looking Yurgach stands on guard before the gate".
+    const kw = words.sort((a, b) => b.length - a.length)[0];
+    lastGate = {fromUid: String(currentRoom.uid || ''), dir, keyName: null,
+                keyDesc: 'the room says it is guarded', keyRoom: null,
+                source: {kind: 'mob', mob: kw, fromRoom: true}};
+    appendOutput('[nav] the map has no key for that way, but "' + text.trim() + '"\n'
+      + '      is standing over it -- treating ' + kw + ' as the key holder.\n','quest');
+    return true;
+  }
+  return false;
+}
+
 function reportKeyFor(fromUid, dir){
   if(!sqlDb || !fromUid || !dir) return false;
   // The live uid first -- but a room that was never identified keeps its Gaardian
@@ -248,7 +290,7 @@ function reportKeyFor(fromUid, dir){
       if(row) break;
     }
   }
-  if(!row) return false;
+  if(!row) return gateFromRoom(dir);
   const [keyName, keyDesc, keyRoom] = row;
   const src = parseKeySource(keyDesc);
   lastGate = {fromUid: String(fromUid), dir, keyName: keyName || null,
@@ -293,6 +335,11 @@ const MAX_RANDOM_STEPS = 40;
 // How often one walk may enter the same room before it is a loop rather than a
 // route. Four, not two: a long legitimate route can cross a hub twice.
 const MAX_ROOM_VISITS = 4;
+// Below this, stop walking and heal. Not a cautious number: at 40% of a 3067hp bar the
+// character can still absorb the two or three rooms it takes to get somewhere safe, and
+// anything lower is betting the morgue on the next room being empty.
+const HEALTH_FLOOR = 0.40;
+const MAX_WALK_HEALS = 10;
 
 let walk = null;   // {targetUid, path, expectUid, lastFrom, lastDir, repaths, timer, onDone, onFail, opened}
 
@@ -437,6 +484,22 @@ export function walkTo(targetUid, onDone, onFail, opts){
   }
 
   let plan = planRoute(currentRoom.uid, targetUid);
+  // A local route that is far longer than the reference map's is not a route, it is
+  // damage. The local graph accumulates wrong edges -- every mis-anchored room and
+  // every "corrected map" line leaves one -- and BFS will happily follow them: from
+  // Aylor recall to Among the Philosophes it proposed twenty steps through bushes
+  // and the Citadel gate, where the Gate Keepers are aggressive and set about the
+  // character, while Gaardian's own map says eight steps south. Walking is not free
+  // and it is not safe, so when the reference route is less than half the length,
+  // take the reference route.
+  if(plan.path && plan.path.length > 4){
+    const ref = gaardianPath(currentRoom.uid, targetUid);
+    if(ref && ref.length && ref.length * 2 <= plan.path.length){
+      appendOutput('[nav] the local map wants ' + plan.path.length + ' steps and Gaardian says '
+        + ref.length + '; taking the short way\n','system');
+      plan = {path: ref, viaCandidate: null, choices: 0, fromReference: true};
+    }
+  }
   if(plan.path === null){
     // The map splits again every time a room is promoted: its Gaardian exits move
     // onto the live uid and GMCP wins the directions it already knew, orphaning
@@ -527,6 +590,31 @@ function step(){
     sendCmdRaw('stand');
     clearStepTimer();
     walk.timer = setTimeout(step, 1000);
+    return;
+  }
+
+  // Hurt is a reason to stop walking.
+  //
+  // The walker had no health gate at all: inside the Yurgach Domain's Black Tower it
+  // kept stepping at 19% of 3067hp, through rooms whose guards attack on sight, while
+  // re-pathing round a stairway it had already visited four times. Nothing in the loop
+  // would ever have chosen to stop -- the character would have died mid-route, and the
+  // morgue costs experience and stats. Walking is the one thing that keeps ADDING
+  // fights, so it is the thing to stop.
+  //
+  // Heal first if there is mana for it; the run continues by itself when it works.
+  if(hpFraction() < HEALTH_FLOOR){
+    const pct = Math.round(hpFraction() * 100);
+    if(manaFraction() > 0.15 && (walk.heals = (walk.heals || 0) + 1) <= MAX_WALK_HEALS){
+      appendOutput('[nav] ' + pct + '% health -- healing before going on ('
+        + walk.heals + '/' + MAX_WALK_HEALS + ').\n','system');
+      sendCmd('cast heal');
+      clearStepTimer();
+      walk.timer = setTimeout(step, 5000);
+      return;
+    }
+    finish(false, pct + '% health and no mana to fix it -- stopping here rather than'
+      + ' walking on into something');
     return;
   }
 

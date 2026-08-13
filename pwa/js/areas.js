@@ -373,6 +373,13 @@ const SEED_ENTRIES = [
   // was refused, and abandoned the target -- twice in one auto-run.
   { area: 'The Keep of the Asherodan', via: 'Vidblain', x: 10, y: 15, dir: 'u',
     note: 'Look for the Zenith Trail in Vidblain. Coords 10,15. Then UP from the trail.' },
+  // The arena has a doorman, not a door. `runto arena` reaches Outside the Arena, whose only
+  // listed exit is south; the archway north is held by "A gigantic man ... guarding the doors"
+  // and walking into it answers "Alas, you cannot go that way." He is not a shopkeeper and
+  // there is nothing to enter -- he wants paying. 2001 gold, per the goal guide, and he takes
+  // it with bad grace: "Damned cheapskates! ... But a deal's a deal..."
+  { area: "The Gladiator's Arena", dir: 'give 2001 gold guard',
+    note: 'The Entrance Guard outside wants 2001 gold to let you in.' },
 ];
 
 export function seedEntryHints(){

@@ -131,6 +131,19 @@ function fetchKeyFromMob(t, gate, resume){
   const tag = gate.fromUid + '|' + gate.dir;
   if(boughtKeys.has(tag)) return false;      // already tried this door
   boughtKeys.add(tag);
+  // The holder is standing in front of us, so do not ask the world where it is.
+  // At the Yurgach black gate `where yurgach` answers with the guard in the Guard
+  // Room -- which is on the FAR side of the very door we cannot open -- and the
+  // errand would set off to walk somewhere it can provably never reach, past the
+  // two sentries actually holding the key.
+  if(src.fromRoom){
+    appendOutput('[S&D] '+src.mob+' is standing over that door; killing it for the key.\n','quest');
+    sndState.pendingKeyMob = {t, gate, resume, kw, mob: src.mob, keyName: gate.keyName,
+                              note: src.note, stage: 'kill', hops: 0, tried: [],
+                              ts: Date.now()};
+    sendCmd('kill ' + kw);
+    return true;
+  }
   appendOutput('[S&D] '+(gate.keyName||'the key')+' is carried by '+src.mob
     + '; asking where it is.\n','quest');
   sndState.pendingKeyMob = {t, gate, resume, kw, mob: src.mob, keyName: gate.keyName,

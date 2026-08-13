@@ -114,3 +114,29 @@ export function describesMob(mobName, line){
   const hay = String(line || '').toLowerCase();
   return sig.every(w => hay.includes(w));
 }
+
+// ---------------------------------------------------------------------------
+// what is standing in the room right now
+// ---------------------------------------------------------------------------
+//
+// GMCP's room.info carries no mob list, so the only record of who is in the room
+// is the {roomchars} block in the text -- and nothing kept it. That was fine while
+// the only consumer was the [Quest] tag scan, which sends its own `look` and reads
+// the reply. It stopped being fine at the Yurgach black gate: the walker needed to
+// know, at the moment a door refused it, that two Yurgach were standing over that
+// door. Asking then is too late; the block has already gone past.
+let roomChars = [];
+
+/** Feed MUD output here. Keeps the most recent {roomchars} block. */
+export function noteRoomChars(text){
+  // Colour codes and all: the room list arrives mid-stream, before anything has
+  // stripped it, and an escape sequence in front of "A harbinger of evil" is not
+  // something a keyword match survives. questtag.js deliberately imports nothing --
+  // it is the one module testable without a browser -- so strip the codes here.
+  const s = String(text || '').replace(/\x1b\[[0-9;]*m/g, '');
+  if(!/\{\/roomchars\}/.test(s)) return;
+  roomChars = roomContents(s, '');
+}
+
+/** The mobs and players in the room, as the game last listed them. */
+export function lastRoomChars(){ return roomChars.slice(); }
