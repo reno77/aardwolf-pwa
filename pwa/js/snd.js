@@ -731,6 +731,23 @@ export function gotoRoomUid(toUid, onDone, opts){
     // component and the link between them is an ordinary `u`/`d` that Gaardian
     // never recorded. Probing takes those exits until the target is reachable,
     // which is how the Twin Paradises layers were crossed by hand.
+    // ...unless the target is in a DIFFERENT PLANE, in which case probing cannot get
+    // there at all: the layers are separate islands in the game as well as in the map,
+    // and the only route between them is out through the amulet and back in through
+    // another pool. Watched live: with the paladin einheriar in Gladsheim and the
+    // character in Hades, the probe exhausted every exit on the Oinos layer and reported
+    // "nothing left to probe" -- twice, because the plane transfer only ran on the
+    // travel step and this failure happens after it.
+    if(inPlane()){
+      const there = String(roomNameOf(toUid) || '').toLowerCase();
+      const here = String(currentRoom.name || '').toLowerCase();
+      const layer = POOL_ORDER.find(nm => there.includes(nm));
+      const tt = sndState.pendingXcp;
+      if(layer && !here.includes(layer) && tt){
+        tt.roomName = roomNameOf(toUid) || tt.roomName;
+        if(enterPoolFor(tt)) return;
+      }
+    }
     if(inArea && !(opts && opts.noProbe) && /no route|lost the route/i.test(String(reason||''))){
       exploreTo(toUid,
         onDone,
@@ -763,6 +780,15 @@ export function gotoRoomUid(toUid, onDone, opts){
     // Elevator from then on.
     if(t) xcpAbandonTarget(t, reason || 'no route to the target room');
   }, opts);
+}
+
+/** The name the map has for a uid, or null. Used to tell which plane a room is on. */
+function roomNameOf(uid){
+  if(!sqlDb || !uid) return null;
+  try {
+    const r = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [String(uid)]);
+    return r.length && r[0].values.length ? String(r[0].values[0][0]) : null;
+  } catch(e){ return null; }
 }
 
 export function resolveAreaUid(areaName){
