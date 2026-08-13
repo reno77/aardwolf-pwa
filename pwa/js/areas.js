@@ -303,11 +303,26 @@ export function entryHint(areaName){
     // item from it rather than making the player provoke a fresh refusal. Only
     // when there is no place to go -- an item hint and a landmark hint are
     // different things.
+    // Likewise for the AREA. A row written before areaNamedIn existed kept the note and
+    // the coordinate but no area -- "Look in northeastern Vidblain. Coords 23,4." was
+    // stored with entry_area NULL -- and followEntryHint needs an area to runto, so the
+    // target was abandoned for "runto refused before" every time, with the answer sitting
+    // in the note the whole while. Re-read the note rather than making the player provoke
+    // a fresh refusal to get the row rewritten.
+    let useArea = area || null;
+    let ux = x, uy = y;
+    if(!useArea && note){
+      useArea = areaNamedIn(note);
+      if(useArea && ux == null){
+        const c = String(note).match(NOTE_COORDS);
+        if(c){ ux = parseInt(c[1]); uy = parseInt(c[2]); }
+      }
+    }
     let useItem = item || null;
-    if(!useItem && note && !area && x == null){
+    if(!useItem && note && !useArea && ux == null){
       useItem = (String(note).match(NOTE_ITEM) || [])[1] || null;
     }
-    return {note: note || null, area: area || null, x, y,
+    return {note: note || null, area: useArea, x: ux, y: uy,
             norunto: !!norunto, landmark: landmark || null, item: useItem,
             dir: dir || null};
   } catch(e){ return null; }
