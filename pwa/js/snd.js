@@ -1790,13 +1790,34 @@ const POOL_ORDER = ['gladsheim', 'pandemonium', 'hades', 'gehenna', 'acheron',
                     "swordbreaker's hoard", 'elysium', 'beastlands',
                     'realm of the zodiac', "thandeld's conflict", 'nine hells'];
 
+// Which pool to take when all we know is "The Lower Planes" or "The Upper Planes".
+//
+// `cp check` gives the AREA for these -- "a cleric einheriar (The Lower Planes)" -- and
+// the pool is chosen from the LAYER, which only a room name carries. So the run reached
+// the Lower Astral Plane, could not tell which of fourteen pools to step into, and
+// stopped there telling the player to take it from here.
+//
+// But each of these is a single Aardwolf area spanning all its layers, so `where` works
+// from any of them: step into one pool of the right set and the existing machinery can
+// place the mob by room from inside. Hades for the lower planes, Gladsheim for the upper.
+const PLANE_SET_DEFAULT = [
+  {re: /\blower\s+planes?\b/i, pool: 3, name: 'Hades'},
+  {re: /\bupper\s+planes?\b/i, pool: 1, name: 'Gladsheim'},
+];
+
 /** Which pool leads to this target, from its room name, or 0 if none does. */
 export function poolIndexFor(t){
   const hay = ((t && (t.roomName || t.loc)) || '').toLowerCase();
-  if(!hay) return 0;
-  // Longest name first so "seven heavens" is not shadowed by a shorter match.
-  const byLength = POOL_ORDER.map((n, i) => [n, i + 1]).sort((a, b) => b[0].length - a[0].length);
-  for(const [name, n] of byLength) if(hay.includes(name)) return n;
+  if(hay){
+    // Longest name first so "seven heavens" is not shadowed by a shorter match.
+    const byLength = POOL_ORDER.map((n, i) => [n, i + 1]).sort((a, b) => b[0].length - a[0].length);
+    for(const [name, n] of byLength) if(hay.includes(name)) return n;
+  }
+  // No layer named: fall back on the plane SET, which the area name does give.
+  const area = ((t && (t.areaName || t.rawLoc)) || '') + ' ' + hay;
+  for(const s of PLANE_SET_DEFAULT){
+    if(s.re.test(area)) return s.pool;
+  }
   return 0;
 }
 
@@ -1809,7 +1830,11 @@ export function poolIndexFor(t){
 function enterPoolFor(t){
   const n = poolIndexFor(t);
   if(!n) return false;
-  appendOutput('[S&D] '+(t.roomName || t.areaName)+' is through pool '+n
+  const layerKnown = !!((t.roomName || t.loc || '').toLowerCase()
+    && POOL_ORDER.some(nm => String(t.roomName || t.loc || '').toLowerCase().includes(nm)));
+  appendOutput('[S&D] '+(t.roomName || t.areaName)+': pool '+n+' ('+(POOL_ORDER[n-1]||'?')+')'
+    + (layerKnown ? '' : ' -- the campaign named the area, not the layer, and `where` reaches'
+      + ' the whole area from inside')
     + '; walking the astral corridor.\n','quest');
   let step = 0;
   const walk = () => {
