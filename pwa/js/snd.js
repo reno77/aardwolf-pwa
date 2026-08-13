@@ -10,6 +10,7 @@ import { findPath, planRoute, walkTo, cancelWalk, exploreTo, isWalking, lastGate
 import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
          parseRuntoNote, rememberEntryHint, entryHint, landmarkKeyword } from './areas.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
+import { noteArrival } from './plane.js';
 // --- state owned by this module ---
 export let campaignTargets=[]; // S&D target list, built from cp info + cp check
 // `wear wpn 2` was two arguments, so it never referred to the wpn2 alias at all.
@@ -1070,6 +1071,10 @@ function enterPoolFor(t){
     setTimeout(()=>{
       if(sndState.pendingXcp !== t) return;
       appendOutput('[S&D] arrived in '+(currentRoom.name||'?')+' ['+(currentRoom.area||'?')+'].\n','quest');
+      // Remember the room the pool dropped us in: a plane can only be LEFT from
+      // its arrival room, and nothing recorded which one that was, so getting out
+      // afterwards meant probing room by room with the amulet. See /leaveplane.
+      noteArrival();
       t.recallSent = true;      // we are in the plane; do not recall back out
       xcpStep(t);
     }, 3500);
@@ -2883,7 +2888,11 @@ export function xcpKillTarget(t, forcedKw, onStillAlive, tagChecked){
   }
   const seen = known || 1;
   appendOutput('[S&D] killing '+t.mob+' (kill '+targetKw+')'
-    + (forcedKw ? ' -- the copy that refused to be hunted'
+    // "refused to be hunted" is the CAMPAIGN reason for a forced keyword. On a
+    // quest the keyword comes from the [QUEST] tag instead, and saying otherwise
+    // credits the kill to a test that never ran.
+    + (forcedKw ? (t.isQuest ? ' -- the copy carrying the [QUEST] tag'
+                             : ' -- the copy that refused to be hunted')
                 : (ct.killOrd > 1 ? ' -- copy '+ct.killOrd+' of '+seen : '')) + '...\n','quest');
   // Watched by parseNotHereOutput: "They aren't here" after this means we are in
   // a room with the right NAME but not the right room. See xcpSweepTwins.

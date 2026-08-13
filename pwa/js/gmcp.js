@@ -12,11 +12,47 @@ export let currentRoom={name:'Unknown',area:'',exits:[]};
 export let charState = 3;    // 3 == "active and ready"
 export let charLevel = 1;
 export let charTier  = 0;
-// From char.vitals. Read by snd.js so the helper stops fighting when it is losing.
+// Read by snd.js so the helper stops fighting when it is losing, and by plane.js
+// before it walks another room of a plane.
 export let charHp    = 0;
 export let charMaxHp = 0;
+export let charMana  = 0;
+export let charMaxMana = 0;
+export let charMoves = 0;
+export let charMaxMoves = 0;
 /** 1 when unknown, so a missing vitals feed never blocks anything. */
 export function hpFraction(){ return charMaxHp > 0 ? charHp / charMaxHp : 1; }
+export function manaFraction(){ return charMaxMana > 0 ? charMana / charMaxMana : 1; }
+
+/**
+ * Take the vitals from the PROMPT as well as from GMCP.
+ *
+ * The gates cannot depend on an optional message. On a session the relay had
+ * reattached to, char.vitals never arrived at all -- a socket capture over a move
+ * and a look showed room.info and nothing else -- while the prompt carried
+ * "[1385/2880hp 2364/2364mn 3074/3074mv ...]" the whole time. The prompt is the one
+ * feed that is always there, so parse it and let GMCP refine it.
+ */
+const PROMPT_VITALS = /(\d+)\/(\d+)hp\s+(\d+)\/(\d+)mn\s+(\d+)\/(\d+)mv/;
+export function noticeVitalsText(text){
+  const m = PROMPT_VITALS.exec(String(text || ''));
+  if(!m) return;
+  charHp = Number(m[1]); charMaxHp = Number(m[2]);
+  charMana = Number(m[3]); charMaxMana = Number(m[4]);
+  charMoves = Number(m[5]); charMaxMoves = Number(m[6]);
+  paintVitals();
+}
+
+function paintVitals(){
+  if(!(charMaxHp > 0)) return;
+  let s = charHp+'/'+charMaxHp+'hp';
+  if(charMaxMana > 0) s += ' '+charMana+'/'+charMaxMana+'mn';
+  if(charMaxMoves > 0) s += ' '+charMoves+'/'+charMaxMoves+'mv';
+  try {
+    document.getElementById('room-name').textContent =
+      (currentRoom.name||'Unknown')+' ('+s+')';
+  } catch(e){ /* the label is a convenience */ }
+}
 
 export const STATE_READY = 3;
 export const STATE_FIGHTING = 8;
@@ -231,20 +267,32 @@ export function processGMCP(key, data){
       }
     } catch(e){ /* areas table is best-effort */ }
   }
-  if(key==='char.vitals'){
-    const hp=data.hp||'', maxhp=data.maxhp||'', mn=data.mana||'', maxmn=data.maxmana||'', mv=data.move||'', maxmv=data.maxmove||'';
-    // Kept, not just displayed. The campaign helper attacked target after target
-    // regardless of health -- 2389, 1440, 1308, 922, dead -- because nothing in the
-    // client ever read these numbers.
-    if(hp!=='' ) charHp = Number(hp) || 0;
-    if(maxhp!=='') charMaxHp = Number(maxhp) || 0;
-    let vitalText='';
-    if(hp&&maxhp) vitalText+=hp+'/'+maxhp+'hp ';
-    if(mn&&maxmn) vitalText+=mn+'/'+maxmn+'mn ';
-    if(mv&&maxmv) vitalText+=mv+'/'+maxmv+'mv';
-    if(vitalText){
-      document.getElementById('room-name').textContent=(currentRoom.name||'Unknown')+' ('+vitalText.trim()+')';
-    }
+  // Aardwolf splits current from maximum: char.vitals carries hp/mana/moves and
+  // char.maxstats carries maxhp/maxmana/maxmoves. This branch read data.maxhp off
+  // char.vitals, where it has never existed, so charMaxHp stayed 0 -- and
+  // hpFraction() returns 1 when it does not know the maximum. Every health gate in
+  // the campaign helper was therefore inert: "stop below 55%" could not fire,
+  // "recall out below 35%" could not fire, and the numbers the helper was written
+  // to respect were never in it. Confirmed by capturing the socket frames.
+  if(key==='char.vitals' || key==='char.maxstats' || key==='char.status'){
+    const num = (...names) => {
+      for(const n of names){
+        const v = data[n];
+        if(v !== undefined && v !== null && v !== '') return Number(v) || 0;
+      }
+      return null;
+    };
+    const hp    = num('hp');
+    const maxhp = num('maxhp');
+    const mn    = num('mana'), maxmn = num('maxmana');
+    const mv    = num('moves', 'move'), maxmv = num('maxmoves', 'maxmove');
+    if(hp    !== null) charHp = hp;
+    if(maxhp !== null) charMaxHp = maxhp;
+    if(mn    !== null) charMana = mn;
+    if(maxmn !== null) charMaxMana = maxmn;
+    if(mv    !== null) charMoves = mv;
+    if(maxmv !== null) charMaxMoves = maxmv;
+    paintVitals();
   }
   if(key==='char.status'){
     // Aardwolf char.status.state, per the GMCP spec:

@@ -1,7 +1,7 @@
 // net.js -- extracted from index.html
 
 import { exportDb, importDb } from './db.js';
-import { processGMCP } from './gmcp.js';
+import { noticeVitalsText, processGMCP } from './gmcp.js';
 import { showFullMap } from './map.js';
 import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
@@ -14,6 +14,7 @@ import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { commandMap } from './state.js';
 import { doXq, parseQuestRoomOutput, questInfo } from './quest.js';
+import { leavePlane, stopLeavingPlane } from './plane.js';
 import { openTransport } from './transport.js';
 import { setSyncBase, setSyncToken, syncBase, syncMap, syncOnLogin, syncReset,
          syncStatus } from './sync.js';
@@ -246,6 +247,8 @@ const HELP = [
   ]],
   ['Quests', [
     { cmds: ['xq'], args: '', what: 'go and kill the current quest target' },
+    { cmds: ['leaveplane','lp'], args: '[rooms]', what: 'get out of a plane: walk back to the room the pool dropped you in and use the amulet' },
+    { cmds: ['stopplane'], args: '', what: 'stop a /leaveplane probe' },
     { cmds: ['quest', 'qinfo'], args: '', what: 'the quest target, and whether its room is in the map' },
   ]],
   ['Map sharing', [
@@ -365,6 +368,8 @@ export function submitCmd(){
     if(cmd==='ht'){ doHuntTrick(parts.slice(1).join(' ').trim()); return; }
     if(cmd==='qw'){ doQuickWhere(parts.slice(1).join(' ').trim()); return; }
     if(cmd==='xq'){ doXq(); return; }
+    if(cmd==='leaveplane' || cmd==='lp'){ leavePlane(parts[1]); return; }
+    if(cmd==='stopplane'){ stopLeavingPlane('asked to stop'); return; }
     if(cmd==='quest' || cmd==='qinfo'){ questInfo(); return; }
     if(cmd==='sync'){ syncMap({}); return; }
     if(cmd==='syncstatus'){ syncStatus(); return; }
@@ -499,6 +504,7 @@ export function handleMessage(msg){
   switch(msg.type){
     case 'text':
       appendOutput(msg.text,'');
+      noticeVitalsText(msg.text);   // the prompt is the only vitals feed always present
       noticeInGame(msg.text);       // first prompt => ask the relay to re-request GMCP state
       onMudText(msg.text);          // let an in-flight walk notice "no exit that way" etc.
       parseInvData(msg.text);          // eqdata/invdata blocks
