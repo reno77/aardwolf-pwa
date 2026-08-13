@@ -1084,7 +1084,24 @@ export function mergeCpCheck(checkList){
 }
 
 export function xcpNext(){
-  if(sndState.cpType==='none'){ appendOutput('[S&D] Not on a campaign.\n','error'); return; }
+  // A client that has just loaded has never seen a `cp check`, so it does not know a
+  // campaign exists -- and the honest-looking answer, "Not on a campaign", is wrong and
+  // sends the player looking for the problem somewhere else. /xcpauto learned to ask the
+  // game first; there is no reason /xcp should not.
+  if(sndState.cpType === 'none' || !campaignTargets.length){
+    appendOutput('[S&D] no campaign read yet -- asking the game, then starting.\n','system');
+    doCpCheck();
+    setTimeout(()=>{
+      if(sndState.cpType === 'none' || !campaignTargets.length){
+        appendOutput('[S&D] the game says you are not on a campaign.'
+          + ' /cpnew takes one.\n','error');
+        return;
+      }
+      if(liveTargets().length) xcpByIndex(1);
+      else appendOutput('[S&D] no live targets left.\n','error');
+    }, 4000);
+    return;
+  }
   // The first outstanding target -- by live position, which is what xcpByIndex
   // now counts. Passing t.index here would mean "the t.index-th LIVE target",
   // which is a different target as soon as anything has died.
