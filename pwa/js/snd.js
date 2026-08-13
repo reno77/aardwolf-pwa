@@ -1865,7 +1865,13 @@ function enterPoolFor(t){
   // entirely. The walker spent ninety seconds trying to path there through layers that
   // are recorded as islands. The way from one plane to another is out through the
   // amulet and back in through the right pool, which /leaveplane already does.
-  if(inPlane() && !isMazeHere()){
+  // No maze test here. I put `!isMazeHere()` on this condition and it was exactly
+  // backwards: every plane layer reports details:"maze", so the guard switched the
+  // leave-first branch OFF in the only situation it exists for, and the corridor walk ran
+  // from inside Hades -- `e` then `enter pool`, which just moves within Hades. That looped:
+  // arrive, note the room, fail to path to Gladsheim, "walk the astral corridor", arrive
+  // in Hades again.
+  if(inPlane()){
     const here = String(currentRoom.name || '').toLowerCase();
     const wantLayer = POOL_ORDER[n-1] || '';
     if(wantLayer && !here.includes(wantLayer)){
@@ -1891,6 +1897,16 @@ function enterPoolFor(t){
       setTimeout(resume, 5000);
       return true;
     }
+  }
+  // The corridor walk is `e` a few times and then `enter pool`, which is only meaningful
+  // ON the Astral Plane. Anywhere else those are ordinary moves: run from inside Hades it
+  // paced east and "entered" its way into another Hades room, over and over. The check
+  // above should stop that, and this refuses to do it even if a future path gets here
+  // some other way.
+  if(!/astral/i.test(String(currentRoom.name || ''))){
+    appendOutput('[S&D] the pools are reached from the Astral Plane, and this is '
+      + (currentRoom.name || 'somewhere else')+' -- not walking a corridor that is not here.\n','error');
+    return false;
   }
   const layerKnown = !!((t.roomName || t.loc || '').toLowerCase()
     && POOL_ORDER.some(nm => String(t.roomName || t.loc || '').toLowerCase().includes(nm)));
