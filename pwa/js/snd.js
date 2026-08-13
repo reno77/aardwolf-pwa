@@ -9,6 +9,8 @@ import { findPath, planRoute, walkTo, cancelWalk, exploreTo, isWalking, lastGate
          walkToCoords } from './nav.js';
 import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
          parseRuntoNote, rememberEntryHint, entryHint, landmarkKeyword } from './areas.js';
+import { haveKey, refreshKeyring, stowKeys } from './keyring.js';
+import { scanFor } from './scan.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 import { noteArrival } from './plane.js';
 // --- state owned by this module ---
@@ -233,9 +235,22 @@ const KEY_ABSENT   = /^you (?:do not|don'?t) see|^that (?:is|s) not here|isn'?t 
 const KEY_MOB_HOPS = 20;          // how far to chase before giving up
 const MOB_DIED = /\bis dead\b|crumbles|You receive \d+ experience|corpse of/i;
 
+/**
+ * The mob name in a key note is prose, not a name.
+ *
+ * "Key is carried by one guard" means A guard, and the leading quantifier is not
+ * part of anything the game will match: `hunt "one guard"` is refused outright and a
+ * scan line reading "A mine guard" does not contain the word "one". Same trap as the
+ * campaign mobs, where `hunt 1.black pegasus` had to become `hunt 1.pegasus`.
+ */
+function keyMobName(mob){
+  return String(mob || '').replace(/^\s*(?:one|two|a|an|the|some)\s+/i, '').trim();
+}
+
 function fetchKeyFromMob(t, gate, resume){
   const src = gate.source;
-  const kw = gmkw(src.mob) || whereKw(src.mob);
+  // ONE bare keyword. gmkw quotes the whole phrase, which hunt will not take.
+  const kw = whereKw(keyMobName(src.mob)) || whereKw(src.mob);
   if(!kw){
     appendOutput('[S&D] '+(gate.keyName||'the key')+' is on '+src.mob
       + ', but there is no keyword to search on.\n','error');
@@ -254,6 +269,34 @@ function fetchKeyFromMob(t, gate, resume){
 
 function giveUpOnKeyMob(st, why){
   sndState.pendingKeyMob = null;
+  // Before handing it back: look around. `hunt` follows a trail and loses it easily
+  // -- "lost track of one guard" is what ended this errand twice in the Realm of the
+  // Hawklords -- while `scan` simply sees three rooms in every direction, and in a
+  // mine full of guards the one carrying the key is usually one of them.
+  if(!st.scanned){
+    st.scanned = true;
+    appendOutput('[S&D] '+why+'; scanning the neighbouring rooms for '+st.mob+'.\n','quest');
+    const want = keyMobName(st.mob);
+    scanFor(name => mobMatches(want, name) || mobMatches(whereKw(want), name),
+      (spot)=>{
+        appendOutput('[S&D] '+st.mob+' is '+(spot.dir === 'here' ? 'right here'
+          : spot.dist+' '+spot.dir)+' -- going to take '+(st.keyName||'the key')+'.\n','quest');
+        let d = 0;
+        if(spot.dir !== 'here'){
+          for(let i = 0; i < spot.dist; i++){ setTimeout(()=>sendCmdRaw(spot.dir), d); d += 1400; }
+        }
+        setTimeout(()=>{
+          // Back into the same state machine, at the stage that kills and loots.
+          sndState.pendingKeyMob = {...st, stage: 'kill', hops: 0, ts: Date.now()};
+          sendCmd('kill ' + st.kw);
+        }, d + 600);
+      },
+      ()=>{
+        appendOutput('[S&D] '+why+' -- take '+(st.keyName||'the key')+' from '+st.mob
+          + ' yourself, then /xcp again.\n','error');
+      });
+    return;
+  }
   appendOutput('[S&D] '+why+' -- take '+(st.keyName||'the key')+' from '+st.mob
     + ' yourself, then /xcp again.\n','error');
 }
@@ -320,6 +363,10 @@ export function parseKeyFetchOutput(text){
   if(KEY_GOT_IT.test(clean)){
     sndState.pendingKeyFetch = null;
     appendOutput('[S&D] got '+(st.keyName||'the key')+'; going back for the door.\n','quest');
+    // Onto the keyring, where the game will find it by itself next time -- and where
+    // it survives the pack being emptied. Keys are still "carried" for unlocking
+    // (help keyring), so this costs nothing now and saves the whole errand later.
+    stowKeys();
     try {
       sqlDb.run('UPDATE exits SET level=0 WHERE from_uid=? AND dir=? AND level=999',
         [st.gate.fromUid, st.gate.dir]);
@@ -379,6 +426,26 @@ function fetchKeyFromContainer(t, gate, resume){
 
 function tryGetKeyThen(t, gate, resume){
   const src = gate && gate.source;
+  // Do we already have it? `help keyring`: "Whenever you use a command such as
+  // 'unlock' that looks for a key, your keyring will also be checked." So a key on
+  // the keyring needs nothing from us but another try at the door -- and the helper
+  // used to skip that question entirely, setting off to hunt a guard for a mine key
+  // it might have been carrying all along.
+  const keyName = gate && (gate.keyName || gate.key_name);
+  if(keyName && !t?.keyringChecked){
+    if(t) t.keyringChecked = true;
+    appendOutput('[S&D] a '+keyName+' is needed; checking the keyring first.\n','quest');
+    refreshKeyring(()=>{
+      if(haveKey(keyName)){
+        appendOutput('[S&D] "'+keyName+'" is already on your keyring, which the game checks\n'
+          + '       when it unlocks -- trying the door again.\n','quest');
+        resume();
+        return;
+      }
+      tryGetKeyThen(t, gate, resume);
+    });
+    return true;
+  }
   if(src && src.kind === 'container'){
     if(fetchKeyFromContainer(t, gate, resume)) return true;
   }
@@ -3360,6 +3427,30 @@ function sweepByWalking(t){
 function sweepWalkStep(t){
   if(sndState.pendingXcp !== t) return;          // target changed or cleared
   const s = t.sweepWalk;
+  // Look before walking. `scan` sees three rooms in every direction, so one command
+  // replaces up to a dozen real moves through an area that is trying to kill us --
+  // and it tells us WHICH way to go rather than picking an untried exit and hoping.
+  if(!s.scanned){
+    s.scanned = true;
+    scanFor(name => mobMatches(t.mob, name),
+      (spot)=>{
+        if(sndState.pendingXcp !== t) return;
+        if(spot.dir === 'here'){ xcpKillTarget(t, actionKw(t)||gmkw(t.mob)); return; }
+        appendOutput('[S&D] '+t.mob+' is '+spot.dist+' '+spot.dir+' -- going there.\n','quest');
+        let d = 0;
+        for(let i = 0; i < spot.dist; i++){ setTimeout(()=>sendCmdRaw(spot.dir), d); d += 1400; }
+        setTimeout(()=>{
+          if(sndState.pendingXcp !== t) return;
+          s.scanned = false;                    // scan again from the new room
+          xcpKillTarget(t, actionKw(t)||gmkw(t.mob), ()=>{
+            if(sndState.pendingXcp === t) sweepWalkStep(t);
+          });
+        }, d + 800);
+      },
+      ()=>{ if(sndState.pendingXcp === t) sweepWalkStep(t); });
+    return;
+  }
+  s.scanned = false;
   if(s.rooms >= SWEEP_WALK_ROOMS){
     appendOutput('[S&D] tried '+s.rooms+' rooms without the campaign clearing.'
       + ' '+t.mob+' may have moved; /xcp '+t.index+' to re-locate.\n','error');

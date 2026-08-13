@@ -15,6 +15,8 @@ import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './din
 import { commandMap } from './state.js';
 import { doXq, parseQuestRoomOutput, questInfo } from './quest.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
+import { parseKeyringOutput, showKeyring } from './keyring.js';
+import { parseScanOutput } from './scan.js';
 import { openTransport } from './transport.js';
 import { setSyncBase, setSyncToken, syncBase, syncMap, syncOnLogin, syncReset,
          syncStatus } from './sync.js';
@@ -240,6 +242,7 @@ const HELP = [
     { cmds: ['cpcheck', 'ccheck'], args: '', what: 'read cp check and rebuild the target list' },
     { cmds: ['cpinfo', 'cinfo'], args: '', what: 'read cp info' },
     { cmds: ['campaign'], args: '', what: 'the campaign panel' },
+    { cmds: ['keyring'], args: '', what: 'list the keys on your keyring -- the game checks it when unlocking, so a key here means no errand' },
     { cmds: ['xcpauto'], args: '[off]', what: 'work through the whole campaign unattended -- rests when hurt, stops after 3 failures in a row (Aardwolf calls this botting: help policies7)' },
     { cmds: ['xcpstop'], args: '', what: 'stop the unattended campaign run' },
     { cmds: ['xcpmode'], args: '<ch|qw>', what: 'how a target is located: campaign-hunt or where' },
@@ -351,6 +354,7 @@ export function submitCmd(){
       } else { xcpNext(); }
       return;
     }
+    if(cmd==='keyring'){ showKeyring(); return; }
     if(cmd==='xcpauto'){ setAutoRun(!/^(off|stop|0|no)$/i.test(parts[1]||'')); return; }
     if(cmd==='xcpstop'){ setAutoRun(false); return; }
     if(cmd==='areas'){ harvestAreaKeywords(); return; }
@@ -526,6 +530,8 @@ export function handleMessage(msg){
       parseQuestRoomOutput(msg.text);  // which copy here wears the [Quest] tag
       parseEntryItemOutput(msg.text);  // readying a held portal such as the amulet
       parseRecallOutput(msg.text);     // did a step of the recall sequence get refused
+      parseScanOutput(msg.text);       // what is standing in the neighbouring rooms
+      parseKeyringOutput(msg.text);    // which keys we already carry
       processTriggers(msg.text); parseWhereOutput(msg.text); parseHuntOutput(msg.text); checkQuest(msg.text);
       break;
     case 'echo': appendOutput(msg.text,'echo'); break;
