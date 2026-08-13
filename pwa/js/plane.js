@@ -24,7 +24,7 @@
 // from Niflheim reached Pluton -- a third layer.
 
 import { sqlDb } from './db.js';
-import { currentRoom, hpFraction } from './gmcp.js';
+import { currentRoom, hpFraction, manaFraction } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
 import { walkTo, isWalking, cancelWalk } from './nav.js';
 import { appendOutput } from './ui.js';
@@ -194,8 +194,18 @@ function nextRoom(why){
     return;
   }
   if(hpFraction() < HEALTH_FLOOR){
-    appendOutput('[plane] '+Math.round(hpFraction()*100)+'% health -- stopping rather than\n'
-      + '        wandering a plane hurt.\n','error');
+    // Heal, do not stop. Stopping strands the character in the plane, which is worse than
+    // the thing the floor exists to prevent -- and it stopped at 58% with a full mana bar,
+    // which is nobody's idea of hurt. Only give up when the mana is gone too.
+    if(manaFraction() > 0.15 && (probe.heals = (probe.heals || 0) + 1) <= 12){
+      appendOutput('[plane] '+Math.round(hpFraction()*100)+'% health -- healing before'
+        + ' going on ('+probe.heals+'/12).\n','plane');
+      sendCmd('cast heal');
+      setTimeout(()=>{ if(probe) nextRoom(why); }, 6000);
+      return;
+    }
+    appendOutput('[plane] '+Math.round(hpFraction()*100)+'% health and no mana left --\n'
+      + '        stopping here rather than wandering a plane hurt. Rest, then /leaveplane.\n','error');
     probe = null;
     return;
   }
