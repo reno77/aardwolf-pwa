@@ -1366,8 +1366,10 @@ export function xcpAbandonTarget(t, reason){
 // recall and a walk; a kill resets the count.
 const AUTO_FAIL_LIMIT = 5;
 const AUTO_GAP_MS = 6000;       // pause between targets
-const AUTO_PASSES = 2;
-const WANDER_RETRIES = 2;       // re-read cp check for a mob that moved          // times to re-try the targets it had to skip
+const AUTO_PASSES = 2;           // times to re-try the targets it had to skip
+const WANDER_RETRIES = 2;        // re-read cp check for a mob that moved
+const AUTO_COOLDOWN_MS = 300000; // wait this long for repops, then try the campaign again
+const AUTO_ROUNDS = 8;           // how many times to come back before giving up
 const REST_BELOW = 0.75;        // rest before the next target below this health
 const REST_UNTIL = 0.95;
 const REST_MANA  = 0.4;         // ...or this much mana
@@ -1379,6 +1381,8 @@ export function setAutoRun(on){
   sndState.autoPasses = 0;
   if(!sndState.autoRun){
     stopAutoWatch();
+    if(sndState.autoCooldown){ clearTimeout(sndState.autoCooldown); sndState.autoCooldown = null; }
+    sndState.autoRounds = 0;
     appendOutput('[S&D] auto-run off. /xcp runs one target at a time again.\n','system');
     return;
   }
@@ -1520,9 +1524,28 @@ function autoContinue(reason, ok){
   if(ok) sndState.autoFails = 0;
   else if(++sndState.autoFails >= AUTO_FAIL_LIMIT){
     appendOutput('[S&D] '+AUTO_FAIL_LIMIT+' targets in a row went nowhere (last: '+reason
-      + ') -- stopping. /xcpauto to start again once you have looked.\n','error');
+      + ').\n','error');
     sndState.autoRun = false;
     stopAutoWatch();
+    // Not the end of the run, just the end of this attempt. Campaign mobs repop and
+    // wandering ones come back, so after a run of failures the useful thing is to wait
+    // and read the campaign again rather than stop for good: there is a week on the
+    // timer and nothing else to do with it.
+    sndState.autoRounds = (sndState.autoRounds || 0) + 1;
+    if(sndState.autoRounds <= AUTO_ROUNDS){
+      appendOutput('[S&D] waiting '+Math.round(AUTO_COOLDOWN_MS/60000)
+        + ' minutes for repops, then trying again (round '+sndState.autoRounds
+        + ' of '+AUTO_ROUNDS+'). /xcpstop to stop for good.\n','quest');
+      sndState.autoCooldown = setTimeout(()=>{
+        sndState.autoCooldown = null;
+        // Everything gets another chance: a skip was about a moment, not the campaign.
+        for(const x of campaignTargets){ if(!x.is_dead){ x.skipped = null; x.wanderTries = 0; } }
+        setAutoRun(true);
+      }, AUTO_COOLDOWN_MS);
+    } else {
+      appendOutput('[S&D] '+AUTO_ROUNDS+' rounds and the campaign is still not finished;'
+        + ' stopping. `cp check` for what is left.\n','error');
+    }
     return false;
   }
   if(!liveTargets().length){
