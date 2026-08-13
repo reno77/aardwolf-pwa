@@ -775,13 +775,19 @@ export function noticeTravelProgress(){
 // Attempts to get out of a room that will not let us leave, before giving up.
 const RECALL_ATTEMPTS = 3;
 
-// Areas whose walk-out has already been tried and failed this session.
+// Walk-outs already tried, keyed by the ROOM they were tried from.
 //
-// The escape used to reset its own flag when the walk finished, so every recall attempt
-// tried the same border again: watched live, the character sat in the clan hall walking `u`
-// to the border room and ending up back where it started, over and over. One attempt per
-// area is the most that can be justified -- if the map's border is wrong, it stays wrong.
+// The escape used to reset its own flag every attempt, so it walked to the same border room,
+// sent the same exit, ended up back where it started and tried again -- forever, in the clan
+// hall. Blocking it per AREA stopped that loop and created another problem: the blind escape
+// below moves through rooms, and a border the map knows may be perfectly walkable from the
+// next room along. Per room is the honest key: one attempt from here, and a new room is a new
+// question.
 const walkedOutOf = new Set();
+function walkOutKey(){ return String(currentRoom.area||'') + '|' + String(currentRoom.uid||''); }
+
+// How far the blind escape may wander before it is clearly not working.
+const BLIND_ROOMS = 12;
 
 /**
  * A room GMCP publishes no exits for cannot be planned out of, only guessed out of.
@@ -793,6 +799,12 @@ const walkedOutOf = new Set();
  */
 function blindWayOut(){
   const tried = sndState.blindExits || (sndState.blindExits = new Set());
+  sndState.blindRooms = (sndState.blindRooms || 0) + 1;
+  if(sndState.blindRooms > BLIND_ROOMS){
+    appendOutput('[S&D] guessed my way through '+BLIND_ROOMS+' rooms without finding a way\n'
+      + '      out. `quit` and relog lands you at recall, which always works.\n','error');
+    return false;
+  }
   const here = String(currentRoom.uid || '');
   for(const dir of ['d', 'out', 'u', 'n', 'e', 's', 'w']){
     if(tried.has(here + '|' + dir)) continue;
@@ -883,9 +895,9 @@ export function xcpRecall(t, onComplete, attempt, onFail){
         setTimeout(()=>{ if(sndState.pendingXcp === t || !t) xcpRecall(t, onComplete, 0, onFail); }, 2500);
         return;
       }
-      const out = walkedOutOf.has(area) ? null : areaWayOut(area, null);
+      const out = walkedOutOf.has(walkOutKey()) ? null : areaWayOut(area, null);
       if(out){
-        walkedOutOf.add(area);
+        walkedOutOf.add(walkOutKey());
         appendOutput('[S&D] nothing here allows recall or a portal, so walking out of '
           + (currentRoom.area||'this area')+' into '+out.toArea+'.\n','quest');
         walkTo(out.uid, ()=>{
@@ -930,9 +942,9 @@ export function xcpRecall(t, onComplete, attempt, onFail){
           setTimeout(()=>{ if(sndState.pendingXcp === t || !t) xcpRecall(t, onComplete, 0, onFail); }, 2500);
           return;
         }
-        const out = walkedOutOf.has(area2) ? null : areaWayOut(area2, null);
+        const out = walkedOutOf.has(walkOutKey()) ? null : areaWayOut(area2, null);
         if(out){
-          walkedOutOf.add(area2);
+          walkedOutOf.add(walkOutKey());
           appendOutput('[S&D] neither the portal nor `recall` works in '
             + (currentRoom.area||'this area')+'; walking out into '+out.toArea+'.\n','quest');
           walkTo(out.uid, ()=>{
