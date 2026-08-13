@@ -12,6 +12,7 @@ import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
 import { errandFor, runErrand } from './errand.js';
 import { haveKey, refreshKeyring, stowKeys } from './keyring.js';
 import { dirWord, scanFor } from './scan.js';
+import { onInterval } from './ticker.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 import { noteArrival } from './plane.js';
 // --- state owned by this module ---
@@ -1609,12 +1610,11 @@ function autoContinue(reason, ok){
       appendOutput('[S&D] waiting '+Math.round(AUTO_COOLDOWN_MS/60000)
         + ' minutes for repops, then trying again (round '+sndState.autoRounds
         + ' of '+AUTO_ROUNDS+'). /xcpstop to stop for good.\n','quest');
-      sndState.autoCooldown = setTimeout(()=>{
-        sndState.autoCooldown = null;
-        // Everything gets another chance: a skip was about a moment, not the campaign.
-        for(const x of campaignTargets){ if(!x.is_dead){ x.skipped = null; x.wanderTries = 0; } }
-        setAutoRun(true);
-      }, AUTO_COOLDOWN_MS);
+      // A DEADLINE, not just a timer. A hidden tab has its timers throttled to about
+      // one a minute, and this one had not fired ten minutes after it was set; the
+      // ticker-driven watch below honours the deadline whatever the page clock does.
+      sndState.autoCooldownAt = Date.now() + AUTO_COOLDOWN_MS;
+      sndState.autoCooldown = setTimeout(()=>resumeAfterCooldown(), AUTO_COOLDOWN_MS);
     } else {
       appendOutput('[S&D] '+AUTO_ROUNDS+' rounds and the campaign is still not finished;'
         + ' stopping. `cp check` for what is left.\n','error');
@@ -1649,6 +1649,15 @@ function autoContinue(reason, ok){
   return true;
 }
 
+/** Start the next round, however we got here. */
+function resumeAfterCooldown(){
+  if(sndState.autoCooldown){ clearTimeout(sndState.autoCooldown); sndState.autoCooldown = null; }
+  sndState.autoCooldownAt = 0;
+  // Everything gets another chance: a skip was about a moment, not about the campaign.
+  for(const x of campaignTargets){ if(!x.is_dead){ x.skipped = null; x.wanderTries = 0; } }
+  setAutoRun(true);
+}
+
 // A watchdog rather than a chain at every dead end.
 //
 // Six places give up on a target by nulling pendingXcp and printing why -- the copy
@@ -1665,7 +1674,15 @@ let autoWatch = null;
 
 function startAutoWatch(){
   if(autoWatch) return;
-  autoWatch = setInterval(()=>{
+  // onInterval, not setInterval: this is the one loop that must keep time in a tab
+  // nobody is looking at, because everything else recovers through it.
+  autoWatch = onInterval(AUTO_WATCH_MS, ()=>{
+    // An overdue cooldown means the page timer was starved. Honour the deadline.
+    if(!sndState.autoRun && sndState.autoCooldownAt && Date.now() >= sndState.autoCooldownAt){
+      appendOutput('[S&D] the wait is over; picking the campaign back up.\n','system');
+      resumeAfterCooldown();
+      return;
+    }
     if(!sndState.autoRun){ stopAutoWatch(); return; }
     // Recovering on purpose -- but not forever. The flag that tells the watchdog to
     // leave a rest alone is also the flag that hid a hang: a pre-rest recall with no
@@ -1716,11 +1733,11 @@ function startAutoWatch(){
     appendOutput('[S&D] auto-run: nothing has been running for '
       + Math.round(AUTO_IDLE_MS/1000)+'s -- picking the campaign back up.\n','system');
     autoContinue('the run stalled', false);
-  }, AUTO_WATCH_MS);
+  });
 }
 
 function stopAutoWatch(){
-  if(autoWatch){ clearInterval(autoWatch); autoWatch = null; }
+  if(autoWatch){ autoWatch(); autoWatch = null; }   // onInterval returns an unsubscribe
   sndState.autoIdleSince = 0;
 }
 
