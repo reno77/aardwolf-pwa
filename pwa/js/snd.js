@@ -3549,6 +3549,11 @@ function killNextCopy(t){
 // The helper killed its way from full health to dead without once looking at the
 // numbers the game sends on every tick.
 const FIGHT_ABOVE = 0.55;
+// Mid-fight healing: start well above the bail line so the heals actually change the
+// outcome, and leave a gap between casts so the round is not spent entirely on healing.
+const HEAL_MID_BELOW = 0.7;
+const HEAL_MID_MANA  = 0.15;
+const HEAL_MID_GAP_MS = 4000;
 const BAIL_BELOW   = 0.35;
 const HEAL_TRIES   = 8;
 
@@ -3689,6 +3694,20 @@ export function xcpKillTarget(t, forcedKw, onStillAlive, tagChecked){
       sndState.pendingXcp = null;
       sndState.pendingKill = null;
       return;
+    }
+    // Heal while the fight is still on, before it becomes a retreat.
+    //
+    // A duck pond in the Kobold Siege Camp holds SEVEN angry geese, they are aggressive
+    // and they heal each other, and they take about 350 health a round off the character
+    // between them. The helper only ever healed BEFORE a fight, so every visit went the
+    // same way: attack, slide to 35%, recall out, walk back, repeat -- and the campaign
+    // goose never died. The mana was sitting there unspent the whole time.
+    if(charState === STATE_FIGHTING && hpFraction() < HEAL_MID_BELOW
+       && manaFraction() > HEAL_MID_MANA
+       && Date.now() - (t.lastMidHeal || 0) > HEAL_MID_GAP_MS){
+      t.lastMidHeal = Date.now();
+      appendOutput('[S&D] '+Math.round(hpFraction()*100)+'% mid-fight -- healing.\n','quest');
+      sendCmd('cast heal');
     }
     if(charState === STATE_FIGHTING && waited < 90000){
       waited += 1500;
