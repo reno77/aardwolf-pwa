@@ -1,6 +1,6 @@
 // snd.js -- extracted from index.html
 
-import { canonicalArea, findAreaAnywhere, gaardianAreasWithRoom, gaardianDb, gaardianPath,
+import { areaWayOut, canonicalArea, findAreaAnywhere, gaardianAreasWithRoom, gaardianDb, gaardianPath,
          resolveRoomByNameAnywhere, sqlDb } from './db.js';
 import { currentRoom, charState, charLevel, hpFraction, manaFraction,
          STATE_READY, STATE_FIGHTING } from './gmcp.js';
@@ -1245,6 +1245,32 @@ export function xcpRecall(t, onComplete, attempt, onFail){
     if(n > RECALL_ATTEMPTS){
       appendOutput('[S&D] cannot get to Aylor recall from '+(currentRoom.name||'here')
         + ' -- the portal and `recall` are both refused.\n','error');
+      // One more idea before giving up: WALK out. Some areas refuse recall and portals
+      // in every room -- The Relinquished Tombs does -- and the character was pinned in
+      // its basement, spending every target's escalation on rooms that were never going
+      // to let it leave. The map knows the border: an exit whose far side is in another
+      // area. Cross it and the portal works from the other side.
+      const out = sndState.walkedOut ? null : areaWayOut(currentRoom.area, null);
+      if(out){
+        sndState.walkedOut = true;
+        appendOutput('[S&D] nothing here allows recall or a portal, so walking out of '
+          + (currentRoom.area||'this area')+' into '+out.toArea+'.\n','quest');
+        walkTo(out.uid, ()=>{
+          sendCmdRaw(out.dir);
+          setTimeout(()=>{ sndState.walkedOut = false; xcpRecall(t, onComplete, 0, onFail); }, 2500);
+        }, (why)=>{
+          sndState.walkedOut = false;
+          appendOutput('[S&D] could not reach the way out ('+why+').\n','error');
+          if(onFail) onFail('cannot leave '+(currentRoom.area||'this area'));
+          else xcpAbandonTarget(t, 'cannot leave this area');
+        }, {ignoreName:true});
+        return;
+      }
+      // Somebody has to be told. Called with no target -- the pre-rest recall, /cpnew --
+      // xcpAbandonTarget has nothing to abandon and simply returns, so the caller's
+      // continuation never runs: that is how the run sat in the tombs basement for ten
+      // minutes, "recalling somewhere safe first" forever.
+      if(onFail){ onFail('cannot reach Aylor recall'); return; }
       xcpAbandonTarget(t, 'cannot reach Aylor recall');
       return;
     }

@@ -2038,3 +2038,27 @@ export function gaardianAreasWithRoom(name){
   }
   return out;
 }
+
+/**
+ * A room in this area with an exit into a DIFFERENT area: the way out on foot.
+ *
+ * Some areas refuse both recall and portals in every room -- The Relinquished Tombs
+ * is one, and an unattended run got pinned in its basement, spending each target's
+ * recall escalation on rooms that would never let it leave. Walking out is the only
+ * answer, and it needs no new data: an exit whose destination sits in another area is
+ * by definition the border.
+ */
+export function areaWayOut(area, notUid){
+  if(!sqlDb || !area) return null;
+  try {
+    const r = sqlDb.exec(
+      'SELECT e.from_uid, e.dir, r2.area FROM exits e'
+      + ' JOIN rooms r1 ON r1.uid = e.from_uid'
+      + ' JOIN rooms r2 ON r2.uid = e.to_uid'
+      + " WHERE r1.area = ? AND r2.area <> r1.area AND r2.area <> ''"
+      + '   AND e.level < 999 AND e.from_uid <> ? LIMIT 1', [String(area), String(notUid || '')]);
+    if(!r.length || !r[0].values.length) return null;
+    const [fromUid, dir, toArea] = r[0].values[0];
+    return {uid: String(fromUid), dir: String(dir), toArea: String(toArea)};
+  } catch(e){ return null; }
+}
