@@ -1919,9 +1919,36 @@ function enterPoolFor(t){
   // above should stop that, and this refuses to do it even if a future path gets here
   // some other way.
   if(!/astral/i.test(String(currentRoom.name || ''))){
+    // Get there with the amulet rather than giving up. This is the step the plane
+    // transfer was missing: leaving Hades put us in the CLAN HALL (recall was what
+    // worked from that layer, not the amulet), and from there nothing was walking
+    // anywhere -- the corridor guard correctly refused, and the chain simply stopped.
+    // The amulet is a held portal used with a bare `enter`, from anywhere that allows
+    // portals, and it lands on the astral corridor.
+    if(t.astralTries && t.astralTries >= 2){
+      appendOutput('[S&D] cannot get to the Astral Plane from here; hold the amulet and\n'
+        + '      `enter` yourself, then /xcp '+t.index+'.\n','error');
+      return false;
+    }
+    t.astralTries = (t.astralTries || 0) + 1;
     appendOutput('[S&D] the pools are reached from the Astral Plane, and this is '
-      + (currentRoom.name || 'somewhere else')+' -- not walking a corridor that is not here.\n','error');
-    return false;
+      + (currentRoom.name || 'somewhere else')+' -- using the amulet to get there.\n','quest');
+    sendCmd('hold amulet');
+    setTimeout(()=>{
+      if(sndState.pendingXcp !== t) return;
+      sendCmdRaw('enter');
+      setTimeout(()=>{
+        if(sndState.pendingXcp !== t) return;
+        if(/astral/i.test(String(currentRoom.name || ''))){ enterPoolFor(t); return; }
+        appendOutput('[S&D] the amulet did not open here'
+          + ' (noportal room?); trying from Aylor.\n','error');
+        xcpRecall(t, ()=>enterPoolFor(t), 0, (why)=>{
+          appendOutput('[S&D] '+why+'.\n','error');
+          xcpAbandonTarget(t, 'cannot reach the Astral Plane');
+        });
+      }, 3000);
+    }, 1500);
+    return true;
   }
   const layerKnown = !!((t.roomName || t.loc || '').toLowerCase()
     && POOL_ORDER.some(nm => String(t.roomName || t.loc || '').toLowerCase().includes(nm)));
