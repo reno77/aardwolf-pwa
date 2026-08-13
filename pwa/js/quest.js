@@ -33,6 +33,7 @@
 import { resolveRoomByNameAnywhere } from './db.js';
 import { appendOutput, stripAnsi } from './ui.js';
 import { currentRoom } from './gmcp.js';
+import { findTagged, lookLanded, mobWordsFrom } from './questtag.js';
 import { sendCmd } from './net.js';
 import { cancelWalk, isWalking } from './nav.js';
 import { actionKw, gmkw, huntTrickKw, whereKeywords, sndState, setQuestHooks, xcpStep } from './snd.js';
@@ -311,12 +312,6 @@ export function doXq(){
 // `kill` counts copies within the room, so the tag's position in the room's own
 // list is exactly the ordinal to use -- which is the one numbering that means
 // anything once we are standing here (see onArriveAtInstance in snd.js).
-// Both bracket styles and an optional word after "quest", because the exact
-// rendering is the game's to choose and a missed tag costs a wasted quest. The
-// scan prints what it saw whenever it finds no tag, so one live run settles the
-// format rather than another guess.
-const QUEST_TAG = /[\[(<]\s*quest(?:\s+(?:target|mob))?\s*[\])>]/i;
-
 // A plain `look` arrives as several writes and its terminator depends on the
 // player's prompt, so waiting for a specific closing token is what left the old
 // scan hanging until the next unrelated line pushed it past its deadline -- and
@@ -340,7 +335,7 @@ function startRoomScan(t, proceed, onNotHere){
   roomScan = {
     t, proceed, onNotHere,
     kw: actionKw(t) || whereKeywords(t.mob)[0] || '',
-    words: mobWords(t.mob),
+    words: mobWordsFrom(whereKeywords(t.mob)),
     buf: '', ts: Date.now(), timer: null,
   };
   roomScan.timer = setTimeout(() => finishScan('nothing came back from "look"'), HARD_MS);
@@ -353,6 +348,17 @@ export function parseQuestRoomOutput(text){
   const st = roomScan;
   if(!st) return;
   st.buf += stripAnsi(text);
+  // Everything before the reply's own opening tag belongs to whatever the client
+  // was doing a moment ago, and reading it as this room's contents is not a
+  // theoretical risk: the hunt probes that ran just before the first live scan
+  // left four lines about oil paintings in the buffer, the tagged painting counted
+  // as the fifth, and `kill 5.oil` answered "They aren't here."
+  const start = st.buf.lastIndexOf('{rdesc}');
+  if(start > 0) st.buf = st.buf.slice(start);
+  // Settle only once the room reply is actually here. Settling on leftovers is how
+  // the scan in the next room concluded "nothing mentioned the target" while
+  // quoting "They aren't here." and the prompt as the room's contents.
+  if(!lookLanded(st.buf)) return;              // the hard deadline is still armed
   clearTimeout(st.timer);
   const left = HARD_MS - (Date.now() - st.ts);
   st.timer = setTimeout(finishScan, Math.max(50, Math.min(SETTLE_MS, left)));
@@ -363,18 +369,9 @@ function finishScan(why){
   if(!st) return;
   roomScan = null;
   clearTimeout(st.timer);
-  const lines = contentsOf(st.buf, st);
+  const { lines, mine, tagged, ord } = findTagged(st.buf, st.words, currentRoom && currentRoom.name);
 
-  // Every line the game showed that could be a copy of our mob. The old test asked
-  // whether the line contained `t.kw`, which /xq had set to the QUOTED whole name
-  // -- `"a swamp ape"` -- so it matched nothing ever written by the MUD, the tag
-  // was never found in any room, and the no-tag branch handed control to the kill.
-  // Room lines are long descriptions ("A hulking ape beats its chest."), so match
-  // on the mob's own words instead of on one command keyword.
-  const mine = lines.filter(line => mentionsMob(line, st.words));
-  const tagged = lines.filter(line => QUEST_TAG.test(line));
-
-  if(!tagged.length){
+  if(!tagged){
     appendOutput('[quest] nothing here carries the [Quest] tag, so this is not the one'
       + (why ? ' ('+why+')' : '')+'.\n','quest');
     // Print what was actually on screen. The tag's exact rendering is the one thing
@@ -392,9 +389,8 @@ function finishScan(why){
   }
 
   // `kill` counts copies of the KEYWORD within this room, in room order, so the
-  // ordinal we want is the tagged line's position among the lines that are copies
-  // of our mob -- not its position in the room as a whole.
-  const ord = mine.findIndex(line => QUEST_TAG.test(line)) + 1;
+  // ordinal findTagged returns is the tagged line's position among the lines that
+  // are copies of our mob -- not its position in the room as a whole.
   let target = st.kw;
   if(ord > 1){
     target = ord + '.' + st.kw;
@@ -409,36 +405,6 @@ function finishScan(why){
       + ' -- killing by keyword.\n','quest');
   }
   if(st.proceed) st.proceed(target);
-}
-
-/**
- * The part of a `look` that lists what is standing here.
- *
- * Everything above the exits line is the room's own name and description, and
- * counting those as copies of the mob is not hypothetical: the quest mob in
- * "Swamp Ape Enclosure" stands in a room whose title and description both say
- * "ape", which would make the real mob copy three and `kill 3.ape` answer "They
- * aren't here." Aardwolf always prints the exits line between the two, so cut
- * there; with no exits line to find, drop the title line at least.
- */
-function contentsOf(buf, st){
-  const all = String(buf).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  const exits = all.findIndex(l => /^\[?\s*(?:obvious\s+)?exits?\s*:/i.test(l));
-  let lines = exits >= 0 ? all.slice(exits + 1) : all.slice(1);
-  const here = String((currentRoom && currentRoom.name) || '').toLowerCase();
-  if(here) lines = lines.filter(l => l.toLowerCase() !== here);
-  return lines;
-}
-
-/** The words from a mob's name worth looking for in a room description. */
-function mobWords(mob){
-  return whereKeywords(mob).filter(w => w.length >= 3).slice(0, 4);
-}
-
-/** Does this room line read like the mob we want? */
-function mentionsMob(line, words){
-  const l = String(line).toLowerCase();
-  return words.some(w => l.includes(w));
 }
 
 // snd.js owns the pipeline but must not import this module -- gmcp.js already

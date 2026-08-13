@@ -930,8 +930,32 @@ export function xcpRecall(t, onComplete){
     setTimeout(()=>sendCmd(c), delay);
     delay+=1000;
   }
+  // Watch the sequence actually work. The default leans on the player's own MUD
+  // aliases (`wpn` -> `poly`), and those go stale: live, `wear wpn` answered "You
+  // do not have that item." twice and the character fought on with an empty
+  // off-hand -- the garbage can needs that slot, so every recall disarms it. The
+  // client cannot know which keyword is right, but it can refuse to be quiet
+  // about the refusal.
+  sndState.recallWatch = {ts: Date.now(), until: Date.now() + delay + 3000, warned: false};
   // Give Aardwolf time to finish the recall before runto.
   setTimeout(onComplete, delay+1500);
+}
+
+const RECALL_STEP_FAILED = /you do not have that item|you (?:aren'?t|are not) carrying|you can'?t wear|you don'?t have that/i;
+
+/** Did a step of the recall sequence just get refused? */
+export function parseRecallOutput(text){
+  const w = sndState.recallWatch;
+  if(!w) return;
+  if(Date.now() > w.until){ sndState.recallWatch = null; return; }
+  if(w.warned) return;
+  const clean = stripAnsi(text);
+  const hit = clean.split(/\r?\n/).find(l => RECALL_STEP_FAILED.test(l));
+  if(!hit) return;
+  w.warned = true;
+  appendOutput('[S&D] a step of the recall sequence was refused: "'+hit.trim()+'"\n','error');
+  appendOutput('[S&D] your gear may not be back on -- check `eq`. The sequence is\n'
+    + '      "'+(sndState.recallSequence||DEFAULT_RECALL)+'"; /recall <sequence> to change it.\n','error');
 }
 
 /**
@@ -1435,6 +1459,29 @@ export function xcpStep(t){
     // If area was just discovered and we haven't recalled yet, run the recall step first.
     if(t.areaUid && !t.recallSent){
       xcpStep(t);
+      return;
+    }
+    // A QUEST already knows its room -- GMCP hands it over with the target -- and
+    // the [Quest] tag is what tells the copies apart once we are standing in it.
+    // So neither `where` nor the hunt trick has anything to add here: they
+    // enumerate copies that the tag decides between anyway. Measured in Aardington
+    // Estate, where "a swampy oil painting" shares the keyword with a delightful
+    // one, a magical one, a flying one and a water colour: ten `hunt` probes and
+    // three room moves, and then one `look` settled it.
+    const questRoomHere = t.roomName && currentRoom.name
+      && String(currentRoom.name).toLowerCase() === String(t.roomName).toLowerCase();
+    if(t.isQuest && (t.roomUid || questRoomHere)){
+      t.located = true;
+      // The sweep needs the quest's room NAME even when we are standing somewhere
+      // else, or it falls back to whatever room the walk happened to end in.
+      t.campaignInstance = {n:1, roomName: t.roomName || currentRoom.name, roomUid: t.roomUid || null};
+      if(t.roomUid && String(currentRoom.uid) !== String(t.roomUid)){
+        appendOutput('[quest] walking to '+(t.roomName||t.roomUid)+' -- the tag is only\n'
+          + '        visible from inside the room.\n','quest');
+        gotoRoomUid(t.roomUid, ()=>onArriveAtInstance(t), {ignoreName:true});
+        return;
+      }
+      onArriveAtInstance(t);
       return;
     }
     // For campaign-hunt mode, the hunt trick comes FIRST -- it is free, needs no

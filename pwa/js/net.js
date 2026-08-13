@@ -7,7 +7,7 @@ import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
 import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseWhereOutput,
          parseRuntoOutput, parseAutoHuntOutput, parseNotHereOutput, parseFollowMoveOutput,
          parseIdentifyOutput, parseWhereOrdOutput, parseKeyFetchOutput, parseKeyMobOutput,
-         parseEntryItemOutput,
+         parseEntryItemOutput, parseRecallOutput,
          huntTo, stopAutoHunt,
          setXcpMode, sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
@@ -81,6 +81,13 @@ export function noticeInGame(text){
   // Aardwolf's prompt carries vitals, e.g. "[2651/2651hp 1976/1976mn ...]".
   if(!/\d+\/\d+hp/.test(text)) return;
   gmcpRequested=true;
+  // Being in the world also means no login is outstanding, whatever route got us
+  // here. `loginPending` was cleared in exactly one place -- closeLogin -- so a
+  // dialog opened and then satisfied by the AUTO-login left the flag set, and
+  // every command afterwards answered "[Login required]" while the character stood
+  // in the game. Nothing recovered from that but a page reload.
+  loginPending=false;
+  try{ document.getElementById('login-overlay').classList.remove('show'); }catch(e){}
   setTimeout(requestGmcpState, 500);
   // Being in the world is also the moment to merge maps with the other clients:
   // the phone should start the session holding what the PC learned in the last
@@ -508,6 +515,7 @@ export function handleMessage(msg){
       parseKeyMobOutput(msg.text);     // ...or off the mob that was carrying it
       parseQuestRoomOutput(msg.text);  // which copy here wears the [Quest] tag
       parseEntryItemOutput(msg.text);  // readying a held portal such as the amulet
+      parseRecallOutput(msg.text);     // did a step of the recall sequence get refused
       processTriggers(msg.text); parseWhereOutput(msg.text); parseHuntOutput(msg.text); checkQuest(msg.text);
       break;
     case 'echo': appendOutput(msg.text,'echo'); break;
