@@ -32,9 +32,10 @@
 
 import { resolveRoomByNameAnywhere } from './db.js';
 import { appendOutput, stripAnsi } from './ui.js';
+import { currentRoom } from './gmcp.js';
 import { sendCmd } from './net.js';
 import { cancelWalk, isWalking } from './nav.js';
-import { gmkw, huntTrickKw, sndState, setQuestHooks, xcpStep } from './snd.js';
+import { actionKw, gmkw, huntTrickKw, whereKeywords, sndState, setQuestHooks, xcpStep } from './snd.js';
 
 /**
  * Everything the game has told us about the current quest.
@@ -310,52 +311,134 @@ export function doXq(){
 // `kill` counts copies within the room, so the tag's position in the room's own
 // list is exactly the ordinal to use -- which is the one numbering that means
 // anything once we are standing here (see onArriveAtInstance in snd.js).
-const QUEST_TAG = /\[\s*quest\s*\]/i;
+// Both bracket styles and an optional word after "quest", because the exact
+// rendering is the game's to choose and a missed tag costs a wasted quest. The
+// scan prints what it saw whenever it finds no tag, so one live run settles the
+// format rather than another guess.
+const QUEST_TAG = /[\[(<]\s*quest(?:\s+(?:target|mob))?\s*[\])>]/i;
+
+// A plain `look` arrives as several writes and its terminator depends on the
+// player's prompt, so waiting for a specific closing token is what left the old
+// scan hanging until the next unrelated line pushed it past its deadline -- and
+// its deadline handler killed whatever was here. Wait for quiet instead: SETTLE_MS
+// after the last byte, or HARD_MS from the start, whichever comes first.
+const SETTLE_MS = 800;
+const HARD_MS = 6000;
+
 let roomScan = null;
+
+/**
+ * Read the room for the [Quest] tag.
+ *
+ * `proceed(killArg)` is called only when the tag is here; `onNotHere()` when it is
+ * not. Neither this function nor the parser ever sends `kill` -- that stays in
+ * xcpKillTarget, which is also where the health gate and the kill verification
+ * live.
+ */
+function startRoomScan(t, proceed, onNotHere){
+  if(roomScan) clearTimeout(roomScan.timer);
+  roomScan = {
+    t, proceed, onNotHere,
+    kw: actionKw(t) || whereKeywords(t.mob)[0] || '',
+    words: mobWords(t.mob),
+    buf: '', ts: Date.now(), timer: null,
+  };
+  roomScan.timer = setTimeout(() => finishScan('nothing came back from "look"'), HARD_MS);
+  appendOutput('[quest] looking for the [Quest] tag -- it is only visible in the room.\n','quest');
+  sendCmd('look');
+}
 
 /** Feed MUD output here while the room is being read for the [Quest] tag. */
 export function parseQuestRoomOutput(text){
   const st = roomScan;
   if(!st) return;
-  if(Date.now() - st.ts > 9000){
-    roomScan = null;
-    appendOutput('[quest] no reply to "look"; killing whatever is here instead.\n','error');
-    if(st.onStillAlive) st.onStillAlive();
-    return;
-  }
   st.buf += stripAnsi(text);
-  // Wait for a whole mob list. Aardwolf brackets it when the client asks for the
-  // tags, and a plain look ends with the prompt.
-  const closed = /\{\/roomchars\}/.test(st.buf);
-  if(!closed && !/\d+\/\d+hp/.test(st.buf)) return;
-  roomScan = null;
-
-  const block = (st.buf.match(/\{roomchars\}([\s\S]*?)\{\/roomchars\}/) || [, st.buf])[1];
-  const lines = block.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  // Which of the copies in THIS room carries the tag? Count only lines that look
-  // like our mob, so an unrelated tagged mob standing here cannot be miscounted.
-  let ord = 0, found = 0;
-  for(const line of lines){
-    if(!lineMentions(line, st.kw)) continue;
-    ord++;
-    if(QUEST_TAG.test(line)){ found = ord; break; }
-  }
-  if(!found){
-    // The tag is absent, so the quest mob is not in this room -- whatever else is.
-    // Say so rather than killing a copy at random and wasting the quest.
-    appendOutput('[quest] nothing here carries the [Quest] tag, so this is not the one.\n','quest');
-    if(st.onStillAlive) st.onStillAlive();
-    return;
-  }
-  const target = found > 1 ? found + '.' + st.kw : st.kw;
-  appendOutput('[quest] copy ' + found + ' here carries the [Quest] tag; killing '
-    + target + '.\n','quest');
-  sendCmd('kill ' + target);
+  clearTimeout(st.timer);
+  const left = HARD_MS - (Date.now() - st.ts);
+  st.timer = setTimeout(finishScan, Math.max(50, Math.min(SETTLE_MS, left)));
 }
 
-/** Does this room line refer to the mob we want? */
-function lineMentions(line, kw){
-  return String(line).toLowerCase().includes(String(kw).toLowerCase());
+function finishScan(why){
+  const st = roomScan;
+  if(!st) return;
+  roomScan = null;
+  clearTimeout(st.timer);
+  const lines = contentsOf(st.buf, st);
+
+  // Every line the game showed that could be a copy of our mob. The old test asked
+  // whether the line contained `t.kw`, which /xq had set to the QUOTED whole name
+  // -- `"a swamp ape"` -- so it matched nothing ever written by the MUD, the tag
+  // was never found in any room, and the no-tag branch handed control to the kill.
+  // Room lines are long descriptions ("A hulking ape beats its chest."), so match
+  // on the mob's own words instead of on one command keyword.
+  const mine = lines.filter(line => mentionsMob(line, st.words));
+  const tagged = lines.filter(line => QUEST_TAG.test(line));
+
+  if(!tagged.length){
+    appendOutput('[quest] nothing here carries the [Quest] tag, so this is not the one'
+      + (why ? ' ('+why+')' : '')+'.\n','quest');
+    // Print what was actually on screen. The tag's exact rendering is the one thing
+    // this check depends on and the one thing not documented anywhere, so when the
+    // scan comes up empty it shows its evidence rather than just its conclusion.
+    if(mine.length){
+      appendOutput('[quest] lines that looked like '+st.t.mob+':\n','system');
+      for(const line of mine.slice(0, 8)) appendOutput('        | '+line+'\n','system');
+    } else if(lines.length){
+      appendOutput('[quest] nothing in the room even mentioned '+st.t.mob+'. Room said:\n','system');
+      for(const line of lines.slice(-8)) appendOutput('        | '+line+'\n','system');
+    }
+    if(st.onNotHere) st.onNotHere();
+    return;
+  }
+
+  // `kill` counts copies of the KEYWORD within this room, in room order, so the
+  // ordinal we want is the tagged line's position among the lines that are copies
+  // of our mob -- not its position in the room as a whole.
+  const ord = mine.findIndex(line => QUEST_TAG.test(line)) + 1;
+  let target = st.kw;
+  if(ord > 1){
+    target = ord + '.' + st.kw;
+    appendOutput('[quest] copy '+ord+' of '+mine.length+' here carries the tag.\n','quest');
+  } else if(ord === 1){
+    appendOutput('[quest] the tagged copy is the first one here.\n','quest');
+  } else {
+    // Tagged, but on a line that does not read like our mob -- its long description
+    // simply does not repeat its name, which is common. The tag still proves the
+    // target is in this room, so the plain keyword is the right thing to swing at.
+    appendOutput('[quest] the tag is here but not on a line naming '+st.t.mob
+      + ' -- killing by keyword.\n','quest');
+  }
+  if(st.proceed) st.proceed(target);
+}
+
+/**
+ * The part of a `look` that lists what is standing here.
+ *
+ * Everything above the exits line is the room's own name and description, and
+ * counting those as copies of the mob is not hypothetical: the quest mob in
+ * "Swamp Ape Enclosure" stands in a room whose title and description both say
+ * "ape", which would make the real mob copy three and `kill 3.ape` answer "They
+ * aren't here." Aardwolf always prints the exits line between the two, so cut
+ * there; with no exits line to find, drop the title line at least.
+ */
+function contentsOf(buf, st){
+  const all = String(buf).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const exits = all.findIndex(l => /^\[?\s*(?:obvious\s+)?exits?\s*:/i.test(l));
+  let lines = exits >= 0 ? all.slice(exits + 1) : all.slice(1);
+  const here = String((currentRoom && currentRoom.name) || '').toLowerCase();
+  if(here) lines = lines.filter(l => l.toLowerCase() !== here);
+  return lines;
+}
+
+/** The words from a mob's name worth looking for in a room description. */
+function mobWords(mob){
+  return whereKeywords(mob).filter(w => w.length >= 3).slice(0, 4);
+}
+
+/** Does this room line read like the mob we want? */
+function mentionsMob(line, words){
+  const l = String(line).toLowerCase();
+  return words.some(w => l.includes(w));
 }
 
 // snd.js owns the pipeline but must not import this module -- gmcp.js already
@@ -363,17 +446,14 @@ function lineMentions(line, kw){
 // it needs to be. Register instead, the way nav.js registers its walk canceller.
 setQuestHooks({
   /**
-   * In the room with the target. Read the mob list and kill the tagged copy.
+   * Asked before every kill in a quest run: is the target in THIS room?
    *
-   * `onStillAlive` is the campaign machinery's own next step, used when no tag is
-   * here -- so a wrong room falls through to the behaviour that sweeps for it
-   * rather than dead-ending.
+   * `proceed(killArg)` runs only when the game showed the tag. `onNotHere()` is the
+   * search continuation -- the twin sweep, the walking sweep, the next candidate
+   * room -- so a room without the tag moves the run along instead of emptying it.
    */
-  killHere(t, onStillAlive){
-    const kw = t.kw || gmkw(t.mob);
-    roomScan = { t, kw, onStillAlive, buf: '', ts: Date.now() };
-    appendOutput('[quest] looking for the [Quest] tag -- it is only visible in the room.\n','quest');
-    sendCmd('look');
+  tagGate(t, proceed, onNotHere){
+    startRoomScan(t, proceed, onNotHere);
   },
   /**
    * A quest kill needs no poll: comm.quest {"action":"killed"} arrives on its own.

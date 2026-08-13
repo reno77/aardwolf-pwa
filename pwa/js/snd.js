@@ -2653,11 +2653,10 @@ function onArriveAtInstance(t){
   // A QUEST target is picked out a different way entirely: the game marks it with
   // a [Quest] tag on the end of its name, and only while you are in the room with
   // it -- `where` does not show the tag. So the hunt trick, which is the campaign
-  // rule, is not just unnecessary here, it is the wrong test.
-  if(t && t.isQuest && questHooks && questHooks.killHere){
-    questHooks.killHere(t, ()=>xcpKillTarget(t));
-    return;
-  }
+  // rule, is not just unnecessary here, it is the wrong test. The tag check itself
+  // lives in xcpKillTarget, because arrival is only ONE of the six paths that
+  // attack (see the gate there).
+  if(t && t.isQuest){ xcpKillTarget(t); return; }
   // The in-area probe already tested every copy hunt can see; repeating it here
   // would ask the same questions and get the same answers.
   const many = (t.whereInstances && t.whereInstances.length > 1);
@@ -2758,10 +2757,46 @@ function healBeforeFighting(t, resume){
   return true;
 }
 
-export function xcpKillTarget(t, forcedKw, onStillAlive){
+// A quest run may not swing at a room indefinitely. If the tag keeps saying the
+// target is here and the kills keep not registering, something is wrong with our
+// ordinal, and the honest answer is to stop rather than clear the room.
+const QUEST_TAG_TRIES = 6;
+
+export function xcpKillTarget(t, forcedKw, onStillAlive, tagChecked){
   if(t.is_dead) return;
+  // A QUEST target is only ever killed when the game has shown us the [Quest] tag
+  // in THIS room. Six different paths reach a kill -- arrival, the hunt-trick
+  // fallback, the twin sweep's `look` probe, the walking sweep, autohunt's arrival
+  // and killNextCopy -- and the tag check used to hang off arrival alone, so the
+  // other five went straight to `kill`. That is how /xq killed a mob with no tag:
+  // the sweep probe saw the mob named in `look` output and attacked.
+  //
+  // This is the one line every one of those paths passes through, so the gate goes
+  // here and covers them all. `tagChecked` is set only by the gate's own callback.
+  if(t.isQuest && !tagChecked && questHooks && questHooks.tagGate){
+    questHooks.tagGate(t,
+      kw => {
+        // Counted here, not on entry to the gate: a sweep asks the gate once per
+        // room and most rooms have no tag, so counting every ASK would end a
+        // legitimate fourteen-room sweep after six rooms with a message about
+        // kills that never happened. What has to be bounded is kills in rooms
+        // that DID show the tag -- if six of those fail to register, our ordinal
+        // is wrong and swinging again just empties the room.
+        t.tagTries = (t.tagTries || 0) + 1;
+        if(t.tagTries > QUEST_TAG_TRIES){
+          appendOutput('[quest] '+QUEST_TAG_TRIES+' kills in rooms that showed the tag and none of\n'
+            + '        them registered as the quest target -- stopping rather than clearing the\n'
+            + '        room. /quest to see the target, /xq to start again.\n','error');
+          sndState.pendingXcp = null;
+          return;
+        }
+        xcpKillTarget(t, kw || forcedKw, onStillAlive, true);
+      },
+      () => { if(onStillAlive) onStillAlive(); else xcpSweepTwins(t); });
+    return;
+  }
   // Health first. Everything below this line commits the character to a fight.
-  if(healBeforeFighting(t, ()=>xcpKillTarget(t, forcedKw, onStillAlive))) return;
+  if(healBeforeFighting(t, ()=>xcpKillTarget(t, forcedKw, onStillAlive, tagChecked))) return;
   // A keyword, like `where` and `hunt`. The quoted full name is not something
   // the game can target: standing in the throne room with Queen Trudes in front
   // of us, `kill "trudes tronesetter, queen of the kobaloi"` answered
