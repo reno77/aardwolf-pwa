@@ -394,6 +394,25 @@ export function parseKeyMobOutput(text){
   // Not while the walker has it: a walk across an area easily outlasts 20s, and this
   // check would abandon the errand mid-route. gotoKeyMobRoom has its own deadline.
   if(st.stage !== 'goto' && Date.now() - st.ts > 20000){
+    // A quiet stretch mid-STEAL is a failed pickpocket, not a lost mob: Aardwolf has
+    // several replies for it ("Oops, you failed to steal from Jereck." is only one) and an
+    // unrecognised one used to run the clock down and end the errand -- with the mob
+    // standing right there, carrying the key, and the fight we would have won next.
+    if(st.stage === 'steal'){
+      st.steals = (st.steals || 0) + 1;
+      if(st.steals < STEAL_TRIES){
+        st.ts = Date.now();
+        appendOutput('[S&D] that pickpocket did not take; trying again ('
+          + st.steals+'/'+STEAL_TRIES+').\n','quest');
+        sendCmd('steal ' + keyKeyword(st.keyName) + ' ' + st.kw);
+        return;
+      }
+      st.stage = 'kill'; st.ts = Date.now();
+      appendOutput('[S&D] stealing is not working; killing '+st.mob+' for '
+        + (st.keyName||'the key')+'.\n','quest');
+      sendCmd('kill ' + st.kw);
+      return;
+    }
     giveUpOnKeyMob(st, 'lost track of '+st.mob);
     return;
   }
