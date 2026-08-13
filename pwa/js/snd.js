@@ -1,6 +1,6 @@
 // snd.js -- extracted from index.html
 
-import { canonicalArea, findAreaAnywhere, gaardianDb, gaardianPath,
+import { canonicalArea, findAreaAnywhere, gaardianAreasWithRoom, gaardianDb, gaardianPath,
          resolveRoomByNameAnywhere, sqlDb } from './db.js';
 import { currentRoom, charState, charLevel, hpFraction, manaFraction,
          STATE_READY, STATE_FIGHTING } from './gmcp.js';
@@ -974,6 +974,11 @@ export function buildCpTargets(infoList){
     areaUid:v.areaUid,
     roomUid:v.roomUid||null,
     roomName:v.roomName||null,
+    // What `cp check`/`cp info` actually printed, before any resolution rewrote it.
+    // The reply truncates -- "(Northeast Corner)" for Northeast Corner of the Bumper
+    // Cars -- so the resolved name cannot be used to ask which OTHER areas hold a room
+    // of that name, which is the question the level-range check has to ask.
+    rawLoc:v.loc||v.roomName||null,
     type:v.type,
     progress:0, total:1, completed:false, is_dead:false,
     index:i+1,
@@ -1014,6 +1019,11 @@ export function buildCpTargetsFromCheck(checkList){
     areaUid:v.areaUid,
     roomUid:v.roomUid||null,
     roomName:v.roomName||null,
+    // What `cp check`/`cp info` actually printed, before any resolution rewrote it.
+    // The reply truncates -- "(Northeast Corner)" for Northeast Corner of the Bumper
+    // Cars -- so the resolved name cannot be used to ask which OTHER areas hold a room
+    // of that name, which is the question the level-range check has to ask.
+    rawLoc:v.loc||v.roomName||null,
     type:v.type,
     progress:v.is_dead?1:0, total:1, completed:!!v.is_dead, is_dead:!!v.is_dead,
     index:i+1,
@@ -1135,6 +1145,8 @@ export function xcpByIndex(index, overrideKw){
     appendOutput('[S&D] '+t.mob+': exact room unknown; will discover via where.\n','quest');
   }
   sndState.xcpIndex=t.index;
+  // Which mob the run is on, for the resume logic: see autoContinue.
+  sndState.autoLastMob = t.mob;
   sndState.shortMobName=t.kw;
   sndState.pendingXcp=null;
   sndState.xcpAwaitingArea=null;
@@ -1354,7 +1366,8 @@ export function xcpAbandonTarget(t, reason){
 // recall and a walk; a kill resets the count.
 const AUTO_FAIL_LIMIT = 5;
 const AUTO_GAP_MS = 6000;       // pause between targets
-const AUTO_PASSES = 2;          // times to re-try the targets it had to skip
+const AUTO_PASSES = 2;
+const WANDER_RETRIES = 2;       // re-read cp check for a mob that moved          // times to re-try the targets it had to skip
 const REST_BELOW = 0.75;        // rest before the next target below this health
 const REST_UNTIL = 0.95;
 const REST_MANA  = 0.4;         // ...or this much mana
@@ -1472,6 +1485,38 @@ function recoverThen(fn, tries){
  */
 function autoContinue(reason, ok){
   if(!sndState.autoRun) return false;
+  // Whatever we were working on did not die, so take it off the list here.
+  //
+  // xcpAbandonTarget marks it, but half a dozen dead ends never reach that: the twin
+  // sweep running out of rooms just prints "it has moved, or the room is not mapped"
+  // and nulls the target. The run then picked the very same target back up -- watched
+  // with Sylvaticus the elf, round and round the Bumper Cars while eight other targets
+  // waited. Marking it in the ONE place that resumes covers every one of those paths.
+  if(!ok && sndState.autoLastMob){
+    const prev = campaignTargets.find(x => x.mob === sndState.autoLastMob && !x.is_dead);
+    if(prev && !prev.skipped){
+      // Try again from a FRESH `cp check` before giving up on it. The room in that
+      // reply is where the mob is NOW, not where it started: across two readings the
+      // earthworm moved from "Tunnel Trap" to "Above Treeline". So a target that was
+      // "in none of the rooms called X" has usually just walked somewhere, and the
+      // game will say where if asked again -- which is a much better answer than
+      // skipping nine targets out of ten because they all wander.
+      prev.wanderTries = (prev.wanderTries || 0) + 1;
+      if(prev.wanderTries <= WANDER_RETRIES){
+        appendOutput('[S&D] '+prev.mob+' was not where the campaign said'
+          + ' -- re-reading cp check for where it is now ('
+          + prev.wanderTries+'/'+WANDER_RETRIES+').\n','quest');
+        doCpCheck();
+        setTimeout(()=>{
+          if(!sndState.autoRun) return;
+          recoverThen(()=>xcpByIndex(prev.mob));
+        }, 4500);
+        return true;                       // not a failure yet
+      }
+      prev.skipped = reason || 'skipped';
+      appendOutput('[S&D] leaving '+prev.mob+' for now ('+(reason||'no progress')+').\n','quest');
+    }
+  }
   if(ok) sndState.autoFails = 0;
   else if(++sndState.autoFails >= AUTO_FAIL_LIMIT){
     appendOutput('[S&D] '+AUTO_FAIL_LIMIT+' targets in a row went nowhere (last: '+reason
@@ -2074,8 +2119,36 @@ export function xcpStep(t){
     // "enumerated 0 instance(s)". The room is the better answer and it is free: walk
     // there, and let the ordinal walk in xcpKillTarget sort out the copies, exactly as
     // it does when the hunt trick cannot separate them either.
-    if(!t.roomUid && t.roomName && !t.roomLookedUp){
+    // Regardless of whether a room was already resolved: `cp check` is parsed the
+    // moment it arrives, and that parse resolves the room name against whatever the
+    // map happens to hold -- which is how a level 86 campaign target ended up with the
+    // Amusement Park's Bumper Cars. The level check below has to be able to overrule
+    // it, so it runs even when roomUid is set.
+    if(t.roomName && !t.roomLookedUp){
       t.roomLookedUp = true;
+      // Which AREA, when `cp check` only gave a room name? Pick by level range: a
+      // campaign is drawn from areas the character can be in, so "Northeast Corner"
+      // at level 86 is Jenny's Tavern (50-100), not the Amusement Park's Bumper Cars
+      // (5-20) -- which is where five attempts went, proving the elf was not there.
+      const candidates = gaardianAreasWithRoom(t.rawLoc || t.roomName);
+      if(candidates.length > 1 && charLevel){
+        const fits = candidates.filter(c => c.low != null
+          && charLevel >= c.low && charLevel <= c.high
+          && (c.minLevel == null || charLevel >= c.minLevel));
+        // Exact name first among those that fit: "Northeast Corner" beats "Northeast
+        // Corner of the Bumper Cars" when the game said the former.
+        const pick = fits.find(c => c.exact) || fits[0];
+        if(pick && !areaNameMatches(pick.area, t.areaName)){
+          appendOutput('[S&D] "'+(t.rawLoc||t.roomName)+'" exists in '+candidates.length
+            + ' areas; at level '+charLevel+' the campaign means '+pick.area
+            + (pick.low != null ? ' ('+pick.low+'-'+pick.high+')' : '')+'.\n','quest');
+          t.areaName = pick.area; t.area = pick.area;
+          t.roomName = pick.room;
+          t.roomUid = null;            // whatever was resolved before was the wrong area
+          t.areaUid = null;
+          t.recallSent = false;        // and we have to travel there now
+        }
+      }
       const found = resolveRoomByNameAnywhere(t.roomName, t.areaName || currentRoom.area);
       if(found && found.uid) t.roomUid = found.uid;
     }

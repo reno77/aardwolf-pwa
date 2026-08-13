@@ -1993,3 +1993,48 @@ export function unparkItemExits(){
     return sqlDb.getRowsModified ? sqlDb.getRowsModified() : 0;
   } catch(e){ console.error('unparkItemExits', e); return 0; }
 }
+
+/**
+ * Areas holding a room of this name, with their level ranges.
+ *
+ * `cp check` names the room and not the area -- "Sylvaticus the elf (Northeast
+ * Corner)" -- and room names repeat across the world: Northeast Corner exists in
+ * Warrior's Training Camp (10-20), the Temple of Shouggoth (10-50) and Jenny's
+ * Tavern (50-100). The client picked the Amusement Park's "Northeast Corner of the
+ * Bumper Cars" for a level 86 campaign and then spent five attempts proving the elf
+ * was not in it.
+ *
+ * Campaigns are drawn from areas in your own level range, so the range is the
+ * disambiguator, and the reference map has carried it all along.
+ */
+export function gaardianAreasWithRoom(name){
+  if(!gaardianDb || !name) return [];
+  const n = String(name).trim().toLowerCase();
+  let rows = [];
+  try {
+    const r = gaardianDb.exec(
+      'SELECT a.areaname, a.level_range, r.roomname FROM rooms r'
+      + ' JOIN areas a ON a.areaid = r.areaid'
+      + ' WHERE LOWER(r.roomname) = ? OR LOWER(r.roomname) LIKE ?', [n, n + '%']);
+    rows = r.length ? r[0].values : [];
+  } catch(e){ return []; }
+  const seen = new Set();
+  const out = [];
+  for(const [areaname, range, roomname] of rows){
+    const key = String(areaname) + '|' + String(roomname);
+    if(seen.has(key)) continue;
+    seen.add(key);
+    // level_range comes as "50-100    (min level: 24)" with HTML padding attached.
+    const clean = String(range || '').replace(/&nbsp;/g, ' ');
+    const span = clean.match(/(\d+)\s*-\s*(\d+)/);
+    const min = clean.match(/min level:\s*(\d+)/i);
+    out.push({
+      area: String(areaname), room: String(roomname),
+      exact: String(roomname).toLowerCase() === n,
+      low: span ? parseInt(span[1]) : null,
+      high: span ? parseInt(span[2]) : null,
+      minLevel: min ? parseInt(min[1]) : null,
+    });
+  }
+  return out;
+}
