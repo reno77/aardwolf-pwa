@@ -1305,6 +1305,33 @@ export function xcpRecall(t, onComplete, attempt, onFail){
     if(n > RECALL_ATTEMPTS){
       appendOutput('[S&D] cannot get to Aylor recall from '+(currentRoom.name||'here')
         + ' -- the portal and `recall` are both refused.\n','error');
+      // In a PLANE this is not a puzzle, it is the rule: a plane refuses recall and
+      // portals everywhere, and the only way out is the amulet from the room the pool
+      // dropped you in. /leaveplane knows that and knows which room it was. Watched live:
+      // the last target of the campaign sat behind a Vidblain coordinate while the
+      // character stood in Gladsheim, unable to start the journey at all.
+      if(inPlane() && !sndState.leftPlaneForTravel){
+        sndState.leftPlaneForTravel = true;
+        appendOutput('[S&D] we are in a plane, so the amulet is the only way out.\n','quest');
+        leavePlane();
+        let waited = 0;
+        const after = () => {
+          if(!inPlane()){
+            sndState.leftPlaneForTravel = false;
+            xcpRecall(t, onComplete, 0, onFail);
+            return;
+          }
+          if((waited += 5000) > 240000){
+            sndState.leftPlaneForTravel = false;
+            if(onFail) onFail('could not leave the plane');
+            else xcpAbandonTarget(t, 'could not leave the plane');
+            return;
+          }
+          setTimeout(after, 5000);
+        };
+        setTimeout(after, 5000);
+        return;
+      }
       // One more idea before giving up: WALK out. Some areas refuse recall and portals
       // in every room -- The Relinquished Tombs does -- and the character was pinned in
       // its basement, spending every target's escalation on rooms that were never going
