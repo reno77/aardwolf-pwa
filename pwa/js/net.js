@@ -16,7 +16,7 @@ import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './din
 import { commandMap } from './state.js';
 import { doXq, parseQuestRoomOutput, questInfo } from './quest.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
-import { parseKeyringOutput, showKeyring } from './keyring.js';
+import { cleanKeyring, parseKeyringOutput, showKeyring } from './keyring.js';
 import { parseScanOutput } from './scan.js';
 import { openTransport } from './transport.js';
 import { setSyncBase, setSyncToken, syncBase, syncMap, syncOnLogin, syncReset,
@@ -243,6 +243,7 @@ const HELP = [
     { cmds: ['cpcheck', 'ccheck'], args: '', what: 'read cp check and rebuild the target list' },
     { cmds: ['cpinfo', 'cinfo'], args: '', what: 'read cp info' },
     { cmds: ['campaign'], args: '', what: 'the campaign panel' },
+    { cmds: ['keyclean'], args: '', what: 'drop the duplicate items off your keyring, keeping one of each' },
     { cmds: ['keyring'], args: '', what: 'list the keys on your keyring -- the game checks it when unlocking, so a key here means no errand' },
     { cmds: ['cpnew'], args: '[auto]', what: 'walk to a quest master, take a campaign, and with "auto" start working through it' },
     { cmds: ['questmaster'], args: '[room]', what: 'where /cpnew goes to ask for a campaign' },
@@ -358,6 +359,7 @@ export function submitCmd(){
       return;
     }
     if(cmd==='keyring'){ showKeyring(); return; }
+    if(cmd==='keyclean'){ cleanKeyring(); return; }
     if(cmd==='cpnew'){ requestCampaign(/^auto$/i.test(parts[1]||'')); return; }
     if(cmd==='questmaster'){
       const n=parts.slice(1).join(' ').trim();

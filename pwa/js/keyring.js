@@ -116,3 +116,48 @@ export function showKeyring(){
   });
   fetchedAt = 0;
 }
+
+/**
+ * `/keyclean` -- leave one of each thing on the keyring and drop the rest.
+ *
+ * The keyring accumulates: `keyring put all` after every key fetch, and it takes
+ * anything eligible, so seven Amusement Park ride tickets ended up filed alongside the
+ * mine key. This is the useful half of aardGigel's Keyring-Manager, which prunes
+ * duplicates through the inventory plugin; the keyring's own `keyring data` already
+ * tells us what is on it, so no plugin is needed.
+ *
+ * Four commands per duplicated item, because there is no "drop the second one": take
+ * them all off the ring, drop the lot, pick one back up, and file it again.
+ */
+export function cleanKeyring(){
+  refreshKeyring((list)=>{
+    const counts = new Map();
+    for(const name of list) counts.set(name, (counts.get(name) || 0) + 1);
+    const dupes = [...counts.entries()].filter(([, n]) => n > 1);
+    if(!dupes.length){
+      appendOutput('[keyring] no repeats -- '+list.length+' item(s), all different.\n','system');
+      return;
+    }
+    appendOutput('[keyring] dropping the extras: '
+      + dupes.map(([name, n]) => (n-1)+' x '+name).join(', ')+'\n','system');
+    let d = 0;
+    for(const [name, n] of dupes){
+      const kw = itemKw(name);
+      for(const cmd of ['keyring get all.'+kw, 'drop all.'+kw, 'get '+kw, 'keyring put '+kw]){
+        setTimeout(()=>sendCmd(cmd), d);
+        d += 1100;
+      }
+    }
+    setTimeout(()=>{
+      fetchedAt = 0;
+      appendOutput('[keyring] done -- one of each kept.\n','system');
+    }, d + 500);
+  });
+  fetchedAt = 0;
+}
+
+/** "a ride ticket" -> "ticket". Aardwolf matches on the head noun. */
+function itemKw(name){
+  const words = String(name || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+  return words.length ? words[words.length - 1] : String(name || '');
+}
