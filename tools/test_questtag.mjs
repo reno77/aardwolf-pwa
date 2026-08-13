@@ -3,7 +3,8 @@
 // Every case below is text the MUD really sent, captured from a live /xq run in
 // Aardington Estate on a quest for "a swampy oil painting". Run: node
 // tools/test_questtag.mjs
-import { findTagged, lookLanded, mobWordsFrom } from '../pwa/js/questtag.js';
+import { describesMob, findTagged, lookLanded, mobWordsFrom,
+         roomContents } from '../pwa/js/questtag.js';
 
 // whereKeywords('a swampy oil painting'), which is what quest.js passes in.
 const WORDS = mobWordsFrom(['painting', 'swampy', 'oil']);
@@ -112,6 +113,32 @@ check('an exits line means the reply landed', lookLanded(LOOK), true);
 for(const tag of ['[QUEST]', '[Quest]', '[quest]', '(Quest)', '[Quest Target]']){
   const room = `[ Exits: north ]\nAn oil painting hangs here. ${tag}\n`;
   check('tag rendering ' + tag, findTagged(room, WORDS, '').ord, 1);
+}
+
+// --- describesMob: room lines are long descriptions, word order is not the name's ---
+// Captured in Svrogan's Logging Camp, where four of a campaign's targets answered to
+// `ironwood` and the in-order test rejected the one standing in front of the character.
+{
+  const line = 'Swaying gently, this massive Ironwood is creaking under its own weight.';
+  const faint = '(Flying) Gentle swaying from this Ironwood produces the faintest of sounds.';
+  check('a creaking Ironwood is described by the creaking line',
+    describesMob('A creaking Ironwood', line), true);
+  check('...even though ironwood comes first in that sentence',
+    /Ironwood is creaking/.test(line), true);
+  check('the faint line is NOT the creaking Ironwood',
+    describesMob('A creaking Ironwood', faint), false);
+  check('a sentinel needs the word sentinel',
+    describesMob('A creaking Ironwood sentinel', line), false);
+  check('an elder needs the word elder',
+    describesMob('A whispering Ironwood elder', line), false);
+  // The ordinal that comes out of a real room: three ironwood lines, the target is the
+  // second, so the command is `kill 2.ironwood`.
+  const room = '[ Exits: north ]\n{roomchars}\n' + faint + '\n' + line + '\n' + line + '\n{/roomchars}\n';
+  const lines = roomContents(room, 'Wandering through the ironwoods');
+  const counted = lines.filter(l => l.toLowerCase().includes('ironwood'));
+  check('three things answer to ironwood', counted.length, 3);
+  check('the creaking one is number 2',
+    counted.findIndex(l => describesMob('A creaking Ironwood', l)) + 1, 2);
 }
 
 console.log(failed ? '\n' + failed + ' FAILED' : '\nall passed');

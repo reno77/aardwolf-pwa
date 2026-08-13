@@ -90,3 +90,27 @@ export function findTagged(buf, words, hereName){
 export function mobWordsFrom(keywords){
   return (keywords || []).filter(w => w && w.length >= 3).slice(0, 4);
 }
+
+const NAME_STOP = new Set(['a','an','the','of','and','in','on','at','with','to','from']);
+
+/**
+ * Does this room line describe `mobName`?
+ *
+ * All the name's significant words, in ANY order. Order is the trap: snd.js's mobMatches
+ * requires them in sequence, which is right for a `where` reply (a real name) and wrong
+ * here, because these are long descriptions. Live, in Svrogan's Logging Camp:
+ *
+ *   target: "A creaking Ironwood"
+ *   line:   "Swaying gently, this massive Ironwood is creaking under its own weight."
+ *
+ * -- ironwood comes before creaking, so the in-order test rejected the very mob it was
+ * standing in front of, four times over, and fell back to the plain keyword that had
+ * already killed the wrong tree.
+ */
+export function describesMob(mobName, line){
+  const want = String(mobName || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+  const sig = want.filter(w => !NAME_STOP.has(w) && w.length > 1);
+  if(!sig.length) return false;
+  const hay = String(line || '').toLowerCase();
+  return sig.every(w => hay.includes(w));
+}

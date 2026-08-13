@@ -13,6 +13,7 @@ import { errandFor, runErrand } from './errand.js';
 import { haveKey, refreshKeyring, stowKeys } from './keyring.js';
 import { dirWord, scanFor } from './scan.js';
 import { inPlane, leavePlane } from './plane.js';
+import { describesMob } from './questtag.js';
 import { findRoomOrdinal } from './roomord.js';
 import { onInterval } from './ticker.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
@@ -3856,7 +3857,9 @@ const QUEST_TAG_TRIES = 6;
 /** Ask roomord.js for the kill ordinal of THIS target in THIS room. */
 function lookForRoomOrdinal(t, then){
   const kw = actionKw(t) || gmkw(t.mob);
-  findRoomOrdinal(t.mob, kw, (line)=>mobMatches(t.mob, line), then);
+  // describesMob, not mobMatches: room lines are long descriptions and their word
+  // order is not the name's. See the note in roomord.js.
+  findRoomOrdinal(t.mob, kw, (line)=>describesMob(t.mob, line), then);
 }
 
 export function xcpKillTarget(t, forcedKw, onStillAlive, tagChecked){

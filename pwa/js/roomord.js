@@ -15,7 +15,7 @@
 
 import { currentRoom } from './gmcp.js';
 import { sendCmd } from './net.js';
-import { lookLanded, roomContents } from './questtag.js';
+import { describesMob, lookLanded, roomContents } from './questtag.js';
 import { appendOutput, stripAnsi } from './ui.js';
 
 const SETTLE_MS = 700;
