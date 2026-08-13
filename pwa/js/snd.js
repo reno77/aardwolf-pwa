@@ -975,11 +975,29 @@ export function xcpRecall(t, onComplete, attempt, onFail){
       }, 2600);
       return;
     }
-    // We moved, but not to Aylor recall -- the clan hall, most likely. The portal
-    // works from there, so run the sequence again from where we now are.
+    // We moved, but not to Aylor recall. If we are somewhere in Aylor, WALK the rest --
+    // the map knows the recall room, and portalling again is what made this a circle.
+    //
+    // The portal goes to the character's RECALL POINT, and this character's recall point is
+    // the clan hall, not Aylor. So the sequence landed in watchmen, where runto cannot be
+    // used and no portal fires, and the escape walked out to Aylor -- whereupon the next
+    // target portalled straight back into the clan hall. Round and round, once per target.
+    const here = String(currentRoom.area || '');
+    if(/^aylor$/i.test(here)){
+      const recallRoom = resolveRoomByName('The Grand City of Aylor', 'aylor');
+      if(recallRoom && recallRoom.uid){
+        appendOutput('[S&D] in Aylor but not at recall; walking to it.\n','quest');
+        walkTo(recallRoom.uid, ()=>onComplete(), (why)=>{
+          appendOutput('[S&D] could not walk to Aylor recall ('+why+').\n','error');
+          if(onFail) onFail('could not reach Aylor recall on foot');
+          else xcpAbandonTarget(t, 'could not reach Aylor recall');
+        }, {ignoreName:true});
+        return;
+      }
+    }
     appendOutput('[S&D] at '+(currentRoom.name||'?')+', which runto cannot be used'
       + ' from; portalling to Aylor ('+n+'/'+RECALL_ATTEMPTS+').\n','quest');
-    xcpRecall(t, onComplete, n);
+    xcpRecall(t, onComplete, n, onFail);
   }, delay+1500);
 }
 
