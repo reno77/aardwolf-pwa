@@ -12,6 +12,7 @@ import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
 import { errandFor, runErrand } from './errand.js';
 import { haveKey, refreshKeyring, stowKeys } from './keyring.js';
 import { dirWord, scanFor } from './scan.js';
+import { inPlane, leavePlane } from './plane.js';
 import { onInterval } from './ticker.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 import { noteArrival } from './plane.js';
@@ -1830,6 +1831,41 @@ export function poolIndexFor(t){
 function enterPoolFor(t){
   const n = poolIndexFor(t);
   if(!n) return false;
+  // Already in a plane, and the target is in a different one? Leave first.
+  //
+  // Watched live: standing on the Oinos Gloom of Hades, `where 2.paladin` answered "On
+  // the Nidavellir Layer of Gladsheim" -- the planes are one Aardwolf area, so `where`
+  // sees across all of them, and the layer we need was through a different pool
+  // entirely. The walker spent ninety seconds trying to path there through layers that
+  // are recorded as islands. The way from one plane to another is out through the
+  // amulet and back in through the right pool, which /leaveplane already does.
+  if(inPlane() && !isMazeHere()){
+    const here = String(currentRoom.name || '').toLowerCase();
+    const wantLayer = POOL_ORDER[n-1] || '';
+    if(wantLayer && !here.includes(wantLayer)){
+      appendOutput('[S&D] the target is in '+wantLayer+' and we are in '
+        + (currentRoom.name||'another plane')+'; leaving this one first.\n','quest');
+      leavePlane();
+      // /leaveplane reports its own progress; come back to the pool walk once it has
+      // put us back on the astral corridor.
+      let waited = 0;
+      const resume = () => {
+        if(sndState.pendingXcp !== t) return;
+        if(!inPlane() || /astral/i.test(String(currentRoom.name||''))){
+          setTimeout(()=>enterPoolFor(t), 1500);
+          return;
+        }
+        if((waited += 5000) > 180000){
+          appendOutput('[S&D] still stuck in this plane; leaving the target for now.\n','error');
+          xcpAbandonTarget(t, 'could not leave the plane');
+          return;
+        }
+        setTimeout(resume, 5000);
+      };
+      setTimeout(resume, 5000);
+      return true;
+    }
+  }
   const layerKnown = !!((t.roomName || t.loc || '').toLowerCase()
     && POOL_ORDER.some(nm => String(t.roomName || t.loc || '').toLowerCase().includes(nm)));
   appendOutput('[S&D] '+(t.roomName || t.areaName)+': pool '+n+' ('+(POOL_ORDER[n-1]||'?')+')'
