@@ -979,10 +979,19 @@ export function onMudText(text){
     // -- the "never auto-path" marker the schema already has -- so the router
     // goes round rather than walking into the same guard every time. It stays in
     // the map because you can still use it yourself once you have the pass.
-    if(b.gated && walk.lastFrom && walk.lastDir){
+    // A LOCKED door counts too. Aardwolf unlocks by itself when you hold the key --
+    // and checks the keyring -- so "The door is locked" means we do not have it, which
+    // is the same situation as a guard: the exit is real and unusable right now. The
+    // walker used to report and stop, which is how Sergeant Miryma stayed alive behind
+    // one locked cell door while three of Warrior's Battlefield's five rooms were
+    // already walked and reachable the long way round. reportKeyFor above has already
+    // recorded the gate, so the key machinery still gets its turn if there is no way
+    // round at all.
+    if((b.gated || b.locked) && walk.lastFrom && walk.lastDir){
       try {
         sqlDb.run('UPDATE exits SET level=999 WHERE from_uid=? AND dir=?', [walk.lastFrom, walk.lastDir]);
-        appendOutput('[nav] '+walk.lastDir+' from here is guarded; routing around it\n','system');
+        appendOutput('[nav] '+walk.lastDir+' from here is '
+          + (b.locked ? 'locked and we have no key' : 'guarded')+'; routing around it\n','system');
       } catch(e){ console.error(e); }
       // Remembered so that if there turns out to be no way round, the failure
       // can say what actually stopped us instead of "lost the route".
