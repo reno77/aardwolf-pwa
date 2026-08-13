@@ -2188,6 +2188,17 @@ export function followEntryHint(t, hint){
     sendCmd(RUNTO + bridge.key);
     awaitAreaThen(hint.area, ()=>{
       walkToCoords(hint.x, hint.y, ()=>{
+        // Are we THERE already? Steering to Vidblain 23,4 put the character in "The
+        // Local Bar [imperial]" -- the coordinate is inside Imperial Nation, not next to
+        // it -- and the run still stopped to say "enter it, then /xcp 1" about an area it
+        // was standing in. Check before doing anything else.
+        if(currentRoom.area && areaNameMatches(t.areaName, currentRoom.area)){
+          appendOutput('[S&D] the coordinate put us inside '+(t.areaName||currentRoom.area)
+            + '; carrying on from here.\n','quest');
+          t.recallSent = true;
+          xcpStep(t);
+          return;
+        }
         // Standing on the coordinate. Before guessing a command from the landmark
         // name, ask the map: the way in is an ordinary exit once it has been walked
         // even once, and GMCP records it the first time. Zenith Trail leads UP into
