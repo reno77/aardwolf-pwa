@@ -205,6 +205,30 @@ export function runtoFailed(text){
 const NOTE_LINE = /^Note:\s*(.+?)\s*$/im;
 // "Look for the Andromeda Galaxy in Vidblain. Coords 14,23."
 const NOTE_AREA = /\bin\s+([A-Z][\w' -]*?)\s*[.,]/;
+
+/**
+ * Find an area the game's own list knows, anywhere in the note.
+ *
+ * NOTE_AREA wants "in <Capitalised>," and the notes do not always oblige: "Look in
+ * northeastern Vidblain. Coords 23,4." reads the qualifier first, so the pattern found
+ * nothing, the hint arrived with a coordinate and no area, and the run said "get there
+ * yourself" about a target it had everything else for. Rather than guess at more prose
+ * shapes, ask the areas table: it holds every area name the game reported, and a window
+ * that matches one of them IS the area.
+ */
+function areaNamedIn(note){
+  const words = String(note || '').replace(/[.,;:!?]/g, ' ').split(/\s+/).filter(Boolean);
+  // Longest windows first, so "The Land of Oz" wins over "Oz".
+  for(let len = Math.min(5, words.length); len >= 1; len--){
+    for(let i = 0; i + len <= words.length; i++){
+      const phrase = words.slice(i, i + len).join(' ');
+      if(phrase.length < 4) continue;
+      const hit = lookupArea(phrase);
+      if(hit && !hit.guessed) return phrase;
+    }
+  }
+  return null;
+}
 const NOTE_COORDS = /\bcoords?\s*(-?\d+)\s*,\s*(-?\d+)/i;
 // The thing to enter once you are standing on the coordinate.
 const NOTE_LANDMARK = /\b(?:look for|find|enter)\s+(?:the\s+)?([\w' -]+?)\s+(?:in|at)\b/i;
@@ -218,7 +242,7 @@ export function parseRuntoNote(text){
   const m = stripAnsi(text).match(NOTE_LINE);
   if(!m) return null;
   const note = m[1];
-  const area = (note.match(NOTE_AREA) || [])[1] || null;
+  const area = (note.match(NOTE_AREA) || [])[1] || areaNamedIn(note);
   const c = note.match(NOTE_COORDS);
   const landmark = (note.match(NOTE_LANDMARK) || [])[1] || null;
   // Only read an item when there is no place to go: "Use the Amulet of the Planes"
