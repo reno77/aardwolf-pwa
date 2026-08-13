@@ -47,6 +47,13 @@ const MOB = [
   /^(.+?)\s+is\s+carrying\s+th(?:is|e)\s+(?:key|keyring|keys)\b/i,
   /^(?:it(?:'s| is)?\s+)?on\s+(?:the\s+)?(.+?)\s*[.,]?$/i,
 ];
+// "The key is in Rydra's inventory.", "found in the ogre guard's inventory" -- the
+// possessive is the tell, and it means a creature however the sentence is built.
+const POSSESSIVE = [
+  /\bkeys?\s+is\s+in\s+([\w' -]+?)'s\s+inventory/i,
+  /\b(?:found|carried|held)\s+(?:in|on)\s+(?:a\s+|an\s+|the\s+)?([\w' -]+?)'s\s+inventory/i,
+  /\bin\s+([\w' -]+?)'s\s+inventory/i,
+];
 const BUY = [
   /\bpurchased\s+from\s+([\w' -]+?)\s+for\s+([\d,]+)\s+gold/i,
   /\bbuy\s+([\w-]+)/i,
@@ -91,8 +98,19 @@ export function parseKeySource(rawNote){
   const note = cleanNote(rawNote);
   if(!note) return {kind: 'none', note: ''};
   for(const re of QUEST) if(re.test(note)) return {kind: 'quest', note};
-  // Container before mob: "The key is inside a large mahogany desk" must not be
-  // read as a mob called "a large mahogany desk".
+  // A POSSESSIVE inventory names a creature, and it has to be tested before the
+  // container patterns because "is in ..." matches both. Imperial Nation's small blue
+  // key is "in Jereck's inventory": read as a container, the client looked for a
+  // container called "Jereck's inventory" in the room, did not find one, and gave up on
+  // a key that is carried by a mob it knows the name of.
+  for(const re of POSSESSIVE){
+    const m = note.match(re);
+    if(!m) continue;
+    const mob = tidyMob(m[1]);
+    if(mob.length > 2 && mob.length < 60) return {kind: 'mob', note, mob};
+  }
+  // Container before mob otherwise: "The key is inside a large mahogany desk" must not
+  // be read as a mob called "a large mahogany desk".
   for(const re of CONTAINER){
     const m = note.match(re);
     if(m){
