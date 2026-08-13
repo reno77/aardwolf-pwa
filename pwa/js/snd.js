@@ -232,7 +232,8 @@ const KEY_IS_NOSTEAL = /\bnosteal\b|cannot be stolen/i;
 const STEAL_OK       = /you (?:steal|got|now have)\b|you successfully (?:steal|pilfer)/i;
 const STEAL_FAILED   = /you failed|oops|fumble|couldn'?t find|nothing to steal|too (?:aware|alert)/i;
 const STEAL_TRIES    = 3;
-const KEY_FIGHT_MS   = 120000;   // how long a key mob may take to die before we give up
+const KEY_FIGHT_MS   = 120000;
+const KILL_RETRIES   = 3;        // swings at one target before it needs a person   // how long a key mob may take to die before we give up
 
 /** Does this reply show the key on the mob? */
 function keyLooksPresent(text, keyName){
@@ -4029,9 +4030,24 @@ export function xcpKillTarget(t, forcedKw, onStillAlive, tagChecked){
       return;
     }
     xcpVerifyKill(t, onStillAlive || (()=>{
-      appendOutput('[S&D] '+t.mob+' is still alive'
-        + (charState === STATE_FIGHTING ? ' and the fight is still going' : '')
-        + '; /xcp to try again.\n','quest');
+      // Attack again rather than stopping. This printed "/xcp to try again" and returned,
+      // which left the target assigned with NOTHING running -- so the ninety-second stall
+      // watchdog eventually skipped it and recorded the reason as "stalled", when what had
+      // actually happened was one kill that did not finish the job. A dragon healer heals
+      // itself; a soldier wanders off mid-fight; either way the answer is another swing,
+      // and xcpKillTarget re-reads the room so the ordinal is fresh each time.
+      if(sndState.pendingXcp !== t) return;
+      t.killRetries = (t.killRetries || 0) + 1;
+      if(t.killRetries <= KILL_RETRIES){
+        appendOutput('[S&D] '+t.mob+' is still alive'
+          + (charState === STATE_FIGHTING ? ' and the fight is still going' : '')
+          + ' -- going again ('+t.killRetries+'/'+KILL_RETRIES+').\n','quest');
+        setTimeout(()=>{ if(sndState.pendingXcp === t) xcpKillTarget(t); }, 3000);
+        return;
+      }
+      appendOutput('[S&D] '+t.mob+' survived '+KILL_RETRIES+' attempts'
+        + ' -- something about this one needs a person.\n','error');
+      xcpAbandonTarget(t, 'survived '+KILL_RETRIES+' attempts');
     }));
   };
   setTimeout(whenDone, 2500);
