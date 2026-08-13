@@ -11,7 +11,7 @@ import { lookupArea, runtoFailed, harvestAreaKeywords, parseAreasOutput,
          parseRuntoNote, rememberEntryHint, entryHint, landmarkKeyword } from './areas.js';
 import { errandFor, runErrand } from './errand.js';
 import { haveKey, refreshKeyring, stowKeys } from './keyring.js';
-import { scanFor } from './scan.js';
+import { dirWord, scanFor } from './scan.js';
 import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 import { noteArrival } from './plane.js';
 // --- state owned by this module ---
@@ -364,7 +364,7 @@ function giveUpOnKeyMob(st, why){
     scanFor(name => mobMatches(want, name) || mobMatches(whereKw(want), name),
       (spot)=>{
         appendOutput('[S&D] '+st.mob+' is '+(spot.dir === 'here' ? 'right here'
-          : spot.dist+' '+spot.dir)+' -- going to take '+(st.keyName||'the key')+'.\n','quest');
+          : spot.dist+' '+dirWord(spot.dir))+' -- going to take '+(st.keyName||'the key')+'.\n','quest');
         let d = 0;
         if(spot.dir !== 'here'){
           for(let i = 0; i < spot.dist; i++){ setTimeout(()=>sendCmdRaw(spot.dir), d); d += 1400; }
@@ -1309,6 +1309,20 @@ export function xcpAbandonTarget(t, reason){
   sndState.pendingTwinProbe=null;
   if(isWalking()) cancelWalk(reason);
   if(t) t.skipped=reason || 'skipped';
+  // ...and on the entry the CAMPAIGN LIST holds, which is a different object: xcpByIndex
+  // builds a fresh copy of the target every time it runs, so marking only the copy left
+  // liveTargets() unchanged and xcpNext picked the same target straight back up. An
+  // unattended run therefore spent all three of its failures on ONE hard target and
+  // stopped with the other nine untouched -- watched with Sylvaticus the elf, behind an
+  // Amusement Park gate that wants a ticket.
+  if(t && !t.isQuest){
+    const ct = campaignTargets[t.index - 1];
+    if(ct && ct !== t && ct.mob === t.mob) ct.skipped = reason || 'skipped';
+    else {
+      const byName = campaignTargets.find(x => x !== t && x.mob === t.mob);
+      if(byName) byName.skipped = reason || 'skipped';
+    }
+  }
   // A quest target is not in campaignTargets, so the count below would report on
   // an unrelated campaign and tell the player to type /xcp.
   if(t && t.isQuest && questHooks && questHooks.abandonNote){ questHooks.abandonNote(); return; }
@@ -2007,14 +2021,28 @@ export function xcpStep(t){
     // three room moves, and then one `look` settled it.
     const questRoomHere = t.roomName && currentRoom.name
       && String(currentRoom.name).toLowerCase() === String(t.roomName).toLowerCase();
-    if(t.isQuest && (t.roomUid || questRoomHere)){
+    // A CAMPAIGN target whose location is a room gets the same treatment. `cp check`
+    // gives a room name for most of them -- "Sylvaticus the elf (Northeast Corner)" --
+    // and the helper threw it away and enumerated with `where` instead, which asked
+    // sixteen questions about elves and sylvaticuses in the Amusement Park and got
+    // "enumerated 0 instance(s)". The room is the better answer and it is free: walk
+    // there, and let the ordinal walk in xcpKillTarget sort out the copies, exactly as
+    // it does when the hunt trick cannot separate them either.
+    if(!t.roomUid && t.roomName && !t.roomLookedUp){
+      t.roomLookedUp = true;
+      const found = resolveRoomByNameAnywhere(t.roomName, t.areaName || currentRoom.area);
+      if(found && found.uid) t.roomUid = found.uid;
+    }
+    if((t.isQuest || t.type === 'room') && (t.roomUid || questRoomHere)){
       t.located = true;
       // The sweep needs the quest's room NAME even when we are standing somewhere
       // else, or it falls back to whatever room the walk happened to end in.
       t.campaignInstance = {n:1, roomName: t.roomName || currentRoom.name, roomUid: t.roomUid || null};
       if(t.roomUid && String(currentRoom.uid) !== String(t.roomUid)){
-        appendOutput('[quest] walking to '+(t.roomName||t.roomUid)+' -- the tag is only\n'
-          + '        visible from inside the room.\n','quest');
+        appendOutput(t.isQuest
+          ? '[quest] walking to '+(t.roomName||t.roomUid)+' -- the tag is only\n'
+            + '        visible from inside the room.\n'
+          : '[S&D] '+t.mob+' is in '+(t.roomName||t.roomUid)+'; walking there.\n','quest');
         gotoRoomUid(t.roomUid, ()=>onArriveAtInstance(t), {ignoreName:true});
         return;
       }
@@ -3876,3 +3904,64 @@ export function doCpCheck(){
   sendCmd('cp check');
 }
 export function refreshCampaign(){ togglePanel('campaign'); doCpCheck(); }
+
+// -----------------------------------------------------------------------------
+// Taking a campaign
+// -----------------------------------------------------------------------------
+// `cp request` only works standing with a quest master: "Visit Commander Barcett in
+// Aylor or any Quest Master to request a campaign." That was the one step still done
+// by hand every time -- recall, walk to the Questor, type it -- so the loop stopped
+// being unattended between campaigns for no better reason than a two-room walk.
+//
+// The room is remembered rather than hardcoded: Aylor's Questor is Among the
+// Philosophes today, and a player who uses Barcett or another master gets theirs
+// recorded the first time /cpnew works from it.
+const QM_ROOM_KEY = 'questmaster_room';
+const QM_DEFAULT = 'Among the Philosophes';
+
+export function questmasterRoom(){
+  try { return localStorage.getItem(QM_ROOM_KEY) || QM_DEFAULT; } catch(e){ return QM_DEFAULT; }
+}
+
+export function setQuestmasterRoom(name){
+  try { localStorage.setItem(QM_ROOM_KEY, String(name || '').trim() || QM_DEFAULT); } catch(e){}
+}
+
+/**
+ * `/cpnew [auto]` -- go to a quest master, take a campaign, and optionally start.
+ *
+ * Sends `cp check` afterwards rather than assuming: the reply is what builds the
+ * target list, and it is also how we find out the request was refused (already on
+ * one, or the level range has nothing in it).
+ */
+export function requestCampaign(startAuto){
+  const room = questmasterRoom();
+  const go = () => {
+    const target = resolveRoomByName(room, 'aylor') || resolveRoomByNameAnywhere(room, 'aylor');
+    if(!target || !target.uid){
+      appendOutput('[S&D] "'+room+'" is not in the map. Walk to a quest master and\n'
+        + '      /cpnew again, or /questmaster <room name> to say where yours is.\n','error');
+      return;
+    }
+    if(String(currentRoom.name||'').toLowerCase() === room.toLowerCase()){ ask(); return; }
+    appendOutput('[S&D] walking to '+room+' to ask for a campaign.\n','quest');
+    walkTo(target.uid, ask, (why)=>{
+      appendOutput('[S&D] could not get to '+room+' ('+why+').\n','error');
+    }, {ignoreName:true});
+  };
+  const ask = () => {
+    sendCmd('cp request');
+    setTimeout(()=>{
+      doCpCheck();
+      if(startAuto) setTimeout(()=>setAutoRun(true), 3500);
+    }, 2500);
+  };
+  // A campaign is requested in Aylor, and runto needs the same room anyway, so the
+  // recall we would spend on the first target is not wasted.
+  if(!/^aylor$/i.test(String(currentRoom.area||''))){
+    appendOutput('[S&D] recalling to Aylor first.\n','quest');
+    xcpRecall(null, go);
+    return;
+  }
+  go();
+}

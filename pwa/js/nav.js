@@ -811,7 +811,15 @@ const BLOCKED = [
 
 /** The item a custom exit needs, if its command quotes one. */
 function neededItem(dir){
-  const m = String(dir || '').match(/'([^']+)'/);
+  const s = String(dir || '');
+  const quoted = s.match(/'([^']+)'/);
+  if(quoted) return quoted[1];
+  // Not every exit quotes its item. The Amusement Park's gates are `give ticket woman`
+  // and the Ruins' shard exit is `wear drtempshard;w`, and with no name to report the
+  // walker said "that way needs an item you are not carrying" -- true, useless, and it
+  // left the errand lookup with nothing to match on. The word after the verb is the
+  // item in all three of these shapes.
+  const m = s.match(/^(?:give|hold|wear|wield|use|put|insert|show)\s+(\w[\w-]*)/i);
   return m ? m[1] : null;
 }
 

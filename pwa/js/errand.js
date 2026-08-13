@@ -59,6 +59,16 @@ const RECIPES = [
     note: 'the mine key needs the guard trick: kill one guard for his trident and '
         + 'uniform, wear both, then the second guard hands the key over',
   },
+  {
+    // Four of the Amusement Park's gates are `give ticket man` / `give ticket woman`,
+    // and a campaign target sits behind one of them. The ticket vendor is in Gateway
+    // to fun and sells "a ride ticket" for 2 gold, so buy a handful: one gate is never
+    // the only gate, and at that price the arithmetic does not need thinking about.
+    area: 'amusement', item: 'ticket',
+    room: 'Gateway to fun',
+    cmds: ['buy 10 ticket'],
+    note: 'the ride tickets come from the vendor in Gateway to fun, 2 gold each',
+  },
 ];
 
 function norm(s){ return String(s || '').trim().toLowerCase(); }

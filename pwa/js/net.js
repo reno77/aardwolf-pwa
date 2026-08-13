@@ -9,7 +9,8 @@ import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseW
          parseIdentifyOutput, parseWhereOrdOutput, parseKeyFetchOutput, parseKeyMobOutput,
          parseEntryItemOutput, parseRecallOutput,
          huntTo, stopAutoHunt,
-         setXcpMode, setAutoRun, sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
+         setXcpMode, setAutoRun, requestCampaign, setQuestmasterRoom, questmasterRoom,
+         sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
 import { commandMap } from './state.js';
@@ -243,6 +244,8 @@ const HELP = [
     { cmds: ['cpinfo', 'cinfo'], args: '', what: 'read cp info' },
     { cmds: ['campaign'], args: '', what: 'the campaign panel' },
     { cmds: ['keyring'], args: '', what: 'list the keys on your keyring -- the game checks it when unlocking, so a key here means no errand' },
+    { cmds: ['cpnew'], args: '[auto]', what: 'walk to a quest master, take a campaign, and with "auto" start working through it' },
+    { cmds: ['questmaster'], args: '[room]', what: 'where /cpnew goes to ask for a campaign' },
     { cmds: ['xcpauto'], args: '[off]', what: 'work through the whole campaign unattended -- rests when hurt, stops after 3 failures in a row (Aardwolf calls this botting: help policies7)' },
     { cmds: ['xcpstop'], args: '', what: 'stop the unattended campaign run' },
     { cmds: ['xcpmode'], args: '<ch|qw>', what: 'how a target is located: campaign-hunt or where' },
@@ -355,6 +358,13 @@ export function submitCmd(){
       return;
     }
     if(cmd==='keyring'){ showKeyring(); return; }
+    if(cmd==='cpnew'){ requestCampaign(/^auto$/i.test(parts[1]||'')); return; }
+    if(cmd==='questmaster'){
+      const n=parts.slice(1).join(' ').trim();
+      if(n){ setQuestmasterRoom(n); appendOutput('[S&D] quest master room set: '+n+'\n','system'); }
+      else appendOutput('[S&D] quest master room is '+questmasterRoom()+'\n','system');
+      return;
+    }
     if(cmd==='xcpauto'){ setAutoRun(!/^(off|stop|0|no)$/i.test(parts[1]||'')); return; }
     if(cmd==='xcpstop'){ setAutoRun(false); return; }
     if(cmd==='areas'){ harvestAreaKeywords(); return; }

@@ -26,6 +26,9 @@ import { appendOutput, stripAnsi } from './ui.js';
 const HEAD = /^(?:(\d+)\s+)?(right here|north|south|east|west|up|down)\b[^:]*:\s*$/i;
 const ITEM = /^-\s*(.+?)\s*$/;
 const DIRS = {north:'n', south:'s', east:'e', west:'w', up:'u', down:'d', 'right here':'here'};
+// For messages: "2 s" reads as a typo, "2 south" reads as an instruction.
+const WORDS = {n:'north', s:'south', e:'east', w:'west', u:'up', d:'down', here:'here'};
+export function dirWord(d){ return WORDS[d] || d; }
 
 const SCAN_MS = 4000;
 let pending = null;

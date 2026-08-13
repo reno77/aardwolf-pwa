@@ -2,6 +2,7 @@
 //   1. an import naming something the module does not export  (would throw)
 //   2. an exported output parser that nothing ever calls       (silently dead)
 //   3. a control character in the source                       (silently dead)
+//   4. a module that is not valid ES module syntax             (nothing loads at all)
 //
 // (3) needs explaining. Editing a file through a shell heredoc turns `\b` in a
 // regex into a literal backspace byte, so `/\bwear\s+wpn\s+2\b/` ships as
@@ -9,7 +10,10 @@
 // JavaScript, `node --check` passes, and the regex is simply always false. Two
 // were found in the tree this way -- one in snd.js that had never once repaired
 // the recall sequence it was written for, and one nearly shipped in db.js.
-import { readdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const dir = 'D:/projects/aardwolf-pwa/pwa/js';
 const files = readdirSync(dir).filter(f => f.endsWith('.js'));
@@ -86,4 +90,22 @@ for(const f of files){
   }
 }
 
-console.log(bad ? `\n${bad} problem(s)` : `\n${files.length} modules: imports resolve, every output parser is dispatched, no stray control characters`);
+// (4) `node --check` treats a .js file as a SCRIPT, which accepts things the browser
+// refuses -- and it accepted a broken string literal that stopped every module in the
+// client from loading. An editing slip put a real newline inside appendOutput('...'),
+// this file reported all clear, and the page came up blank with "Invalid or unexpected
+// token" in a console nobody was watching. Parsing each file as a MODULE catches it.
+const tmp = mkdtempSync(join(tmpdir(), 'wiring-'));
+for(const [f, s] of Object.entries(src)){
+  const mjs = join(tmp, f.replace(/\.js$/, '.mjs'));
+  writeFileSync(mjs, s);
+  try {
+    execFileSync(process.execPath, ['--check', mjs], {stdio: ['ignore', 'ignore', 'pipe']});
+  } catch(e){
+    const msg = String(e.stderr || e.message).split('\n').filter(Boolean).slice(0, 4).join('\n    ');
+    console.log(`NOT VALID ES MODULE SYNTAX: ${f}\n    ${msg}`);
+    bad++;
+  }
+}
+
+console.log(bad ? `\n${bad} problem(s)` : `\n${files.length} modules: imports resolve, every output parser is dispatched, no stray control characters, all parse as modules`);
