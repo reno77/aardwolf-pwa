@@ -792,6 +792,18 @@ function neededItem(dir){
   return m ? m[1] : null;
 }
 
+/**
+ * The word to type at the item: "steel crank" -> "crank".
+ *
+ * Aardwolf targets on keywords, and the head noun is the last word in every one of
+ * these seen so far ("steel crank", "drtempshard", "silver key"). The rest of the
+ * name is an adjective the room shares with its furniture.
+ */
+function itemKw(item){
+  const words = String(item || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+  return words.length ? words[words.length - 1] : String(item || '');
+}
+
 // A shut door, in whatever the area calls it. Checked before anything is deleted
 // from the map, because both messages can arrive in one chunk: walking west into
 // a shut gate produced "The wooden gate is closed." AND a cannot-go-that-way, and
@@ -839,6 +851,23 @@ export function onMudText(text){
     if(b.missingItem){
       if(!isCustomExit(walk.lastDir)) continue;
       const item = neededItem(walk.lastDir);
+      // Try to pick it up before writing the exit off. These items are usually
+      // lying in the room the exit leaves from -- the Keep of the Asherodan's
+      // `hold 'steel crank';turn crank` is a crank on the elevator floor -- and one
+      // `get` is much cheaper than routing around, which in the Keep meant six
+      // re-paths and then "there is no way round it". Once per exit: if the item is
+      // not here, it is not here.
+      const tag = walk.lastFrom + '|' + walk.lastDir;
+      if(item && !walk.gotTried) walk.gotTried = new Set();
+      if(item && !walk.gotTried.has(tag)){
+        walk.gotTried.add(tag);
+        appendOutput('[nav] that way needs "'+item+'" -- trying to pick it up here\n','system');
+        unspendLastStep();
+        sendCmdRaw('get ' + itemKw(item));
+        clearStepTimer();
+        walk.timer = setTimeout(step, 900);
+        return;
+      }
       // The route is real, we just cannot use it -- so park the exit at level 999
       // and look for another way, exactly as a guarded exit is handled. Reporting
       // and stopping here strands the character whenever the cheap route needs an

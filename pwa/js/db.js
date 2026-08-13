@@ -3,7 +3,7 @@
 import { renderRooms } from './nav.js';
 import { areaNameMatches, resolveAreaUid, resolveRoomsByName } from './snd.js';
 import { commandMap } from './state.js';
-import { seedAreas } from './areas.js';
+import { seedAreas, seedEntryHints } from './areas.js';
 import { initInventory } from './dinv.js';
 import { appendOutput, renderTriggers } from './ui.js';
 import { isNativeHost, nativeOpenFile, nativeSaveFile } from './transport.js';
@@ -119,7 +119,7 @@ const SCHEMA_SQL = `
     -- Vidblain. Coords 14,23." For areas reached only via a landmark elsewhere,
     -- this is the only routing information that exists.
     entry_note TEXT, entry_area TEXT, entry_x INTEGER, entry_y INTEGER,
-    entry_landmark TEXT, entry_item TEXT);
+    entry_landmark TEXT, entry_item TEXT, entry_dir TEXT);
   CREATE INDEX IF NOT EXISTS idx_areas_key ON areas(key);
   CREATE TABLE IF NOT EXISTS mobs(
     mob TEXT NOT NULL, area TEXT NOT NULL, room TEXT, room_uid TEXT,
@@ -215,7 +215,8 @@ export async function initDb() {
   try { sqlDb.run('ALTER TABLE exits ADD COLUMN random INTEGER DEFAULT 0'); addedRandomCol = true; }
   catch(e){ /* already there */ }
   for(const col of ['norunto INTEGER DEFAULT 0', 'entry_note TEXT', 'entry_area TEXT',
-                    'entry_x INTEGER', 'entry_y INTEGER', 'entry_landmark TEXT', 'entry_item TEXT']){
+                    'entry_x INTEGER', 'entry_y INTEGER', 'entry_landmark TEXT', 'entry_item TEXT',
+                    'entry_dir TEXT']){
     try { sqlDb.run('ALTER TABLE areas ADD COLUMN ' + col); } catch(e){ /* already there */ }
   }
   // Aardwolf's own coordinates, straight off room.info. Distinct from rooms.x/y,
@@ -227,6 +228,7 @@ export async function initDb() {
   }
 
   seedAreas();   // minimal area keyword seed; /areas harvests the real list
+  seedEntryHints();  // entries whose own note does not describe the last step
   initInventory();
 
   // Load Gaardian map database (read-only reference, not persisted with user data)

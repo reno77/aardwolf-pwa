@@ -2,7 +2,7 @@
 
 import { canonicalArea, findAreaAnywhere, gaardianDb, gaardianPath,
          resolveRoomByNameAnywhere, sqlDb } from './db.js';
-import { currentRoom, charState, charLevel, hpFraction,
+import { currentRoom, charState, charLevel, hpFraction, manaFraction,
          STATE_READY, STATE_FIGHTING } from './gmcp.js';
 import { sendCmd, sendCmdRaw } from './net.js';
 import { findPath, planRoute, walkTo, cancelWalk, exploreTo, isWalking, lastGateInfo, clearGateInfo,
@@ -16,7 +16,7 @@ export let campaignTargets=[]; // S&D target list, built from cp info + cp check
 // `wear wpn 2` was two arguments, so it never referred to the wpn2 alias at all.
 // Both weapon slots now go through their aliases (wpn -> poly, wpn2 -> poly2).
 export const DEFAULT_RECALL = 'wear garbage;enter;rem garbage;wear wpn;wear wpn2';
-export let sndState={cpType:'none', cpLevel:0, xcpIndex:0, xcpMode:localStorage.getItem('xcp_mode')||'ch', recallSequence:fixStoredRecall(localStorage.getItem('recall_sequence'))||DEFAULT_RECALL};
+export let sndState={cpType:'none', cpLevel:0, xcpIndex:0, autoRun:false, autoFails:0, autoPasses:0, xcpMode:localStorage.getItem('xcp_mode')||'ch', recallSequence:fixStoredRecall(localStorage.getItem('recall_sequence'))||DEFAULT_RECALL};
 
 /** Repair a stored sequence that carries the `wear wpn 2` typo. */
 function fixStoredRecall(seq){
@@ -483,12 +483,20 @@ export function gotoRoomUid(toUid, onDone, opts){
     // Eastern Desert all turned up). The intended way in is a spoken tribe name,
     // and `say lynx` / `say bear` both do nothing for a character who has not done
     // the area quest -- so for that character there is no route at all.
+    const t = sndState.pendingXcp;
     if(/still lost|somewhere unexpected/i.test(String(reason || ''))){
-      const t = sndState.pendingXcp;
       appendOutput('[S&D] that area moves you around unpredictably, so there is no route\n'
         + '      to plan. Get in yourself and /xcp again from inside.\n','quest');
       if(t) xcpAbandonTarget(t, 'lost in random exits');
+      return;
     }
+    // Any other unreachable reason ends this target too. It used to print and stop
+    // there, leaving pendingXcp set -- so the target stayed "in progress" with
+    // nothing running, and an unattended run hung on it indefinitely. Watched live
+    // in the Keep of the Asherodan: the only mapped way to Johnette needs a steel
+    // crank, six re-paths found nothing else, and the run sat in the Ancient
+    // Elevator from then on.
+    if(t) xcpAbandonTarget(t, reason || 'no route to the target room');
   }, opts);
 }
 
@@ -917,9 +925,13 @@ export function noticeTravelProgress(){
   armRuntoWatchdog(t);
 }
 
-export function xcpRecall(t, onComplete){
+// Attempts to get out of a room that will not let us leave, before giving up.
+const RECALL_ATTEMPTS = 3;
+
+export function xcpRecall(t, onComplete, attempt){
   // User's recall alias is an equipment sequence, not the simple 'rec' command.
   const recallSeq=(sndState.recallSequence||DEFAULT_RECALL).split(';');
+  const startArea = String(currentRoom.area || '');
   let delay=0;
   for(const cmd of recallSeq){
     const c=cmd.trim();
@@ -938,8 +950,69 @@ export function xcpRecall(t, onComplete){
   // client cannot know which keyword is right, but it can refuse to be quiet
   // about the refusal.
   sndState.recallWatch = {ts: Date.now(), until: Date.now() + delay + 3000, warned: false};
-  // Give Aardwolf time to finish the recall before runto.
-  setTimeout(onComplete, delay+1500);
+
+  // Check we ended up where runto needs us, before running anything that depends
+  // on it.
+  //
+  // The helper used to fire the sequence and call onComplete regardless. Two
+  // separate failures came out of that in one run:
+  //
+  //   * Anthrox's Prison is noportal, so the garbage can did nothing at all and
+  //     `runto snuckles` went out from inside Anthrox.
+  //   * Plain `recall` DOES work in most rooms, but this character's recall point
+  //     is the clan hall, not Aylor -- and runto only works from the Grand City of
+  //     Aylor. So "we left the area" is not the test; "we are at Aylor recall" is.
+  //     That is exactly why the stored sequence is a garbage-can portal.
+  const n = (attempt || 0) + 1;
+  setTimeout(()=>{
+    if(sndState.pendingXcp !== t) return;
+    if(atRecallRoom()){ onComplete(); return; }
+    if(n > RECALL_ATTEMPTS){
+      appendOutput('[S&D] cannot get to Aylor recall from '+(currentRoom.name||'here')
+        + ' -- the portal and `recall` are both refused.\n','error');
+      xcpAbandonTarget(t, 'cannot reach Aylor recall');
+      return;
+    }
+    const stillStuck = String(currentRoom.area || '') === startArea;
+    if(stillStuck){
+      // The portal was refused. `recall` gets out of nearly anywhere, even though
+      // it lands somewhere runto cannot be used from -- from there the portal
+      // works, so this is a two-step escape rather than a dead end.
+      appendOutput('[S&D] still in '+(currentRoom.area||'?')
+        + '; the portal did not fire here. Trying plain `recall`.\n','quest');
+      sendCmdRaw('recall');
+      setTimeout(()=>{
+        if(sndState.pendingXcp !== t) return;
+        if(String(currentRoom.area || '') !== startArea){
+          xcpRecall(t, onComplete, n);          // out of the area: portal again
+          return;
+        }
+        const exits = currentRoom.exits || [];
+        const pick = ['n','e','s','w','u','d'].find(d => exits.includes(d)) || exits[0];
+        if(!pick){
+          appendOutput('[S&D] and there is no exit to try from here.\n','error');
+          xcpAbandonTarget(t, 'stuck in a norecall room with no exits');
+          return;
+        }
+        appendOutput('[S&D] `recall` is refused here too -- stepping '+pick
+          + ' and trying again ('+n+'/'+RECALL_ATTEMPTS+').\n','quest');
+        sendCmdRaw(pick);
+        setTimeout(()=>{ if(sndState.pendingXcp === t) xcpRecall(t, onComplete, n); }, 2000);
+      }, 2600);
+      return;
+    }
+    // We moved, but not to Aylor recall -- the clan hall, most likely. The portal
+    // works from there, so run the sequence again from where we now are.
+    appendOutput('[S&D] at '+(currentRoom.name||'?')+', which runto cannot be used'
+      + ' from; portalling to Aylor ('+n+'/'+RECALL_ATTEMPTS+').\n','quest');
+    xcpRecall(t, onComplete, n);
+  }, delay+1500);
+}
+
+// runto refuses to work anywhere but the Grand City of Aylor's recall room, and
+// says so: "You need to be at the Grand City of Aylor to use this command."
+function atRecallRoom(){
+  return /^the grand city of aylor$/i.test(String(currentRoom.name || ''));
 }
 
 const RECALL_STEP_FAILED = /you do not have that item|you (?:aren'?t|are not) carrying|you can'?t wear|you don'?t have that/i;
@@ -977,15 +1050,196 @@ export function xcpAbandonTarget(t, reason){
   // an unrelated campaign and tell the player to type /xcp.
   if(t && t.isQuest && questHooks && questHooks.abandonNote){ questHooks.abandonNote(); return; }
   const remaining=campaignTargets.filter(x=>!x.is_dead && !x.skipped);
-  // Deliberately does NOT chain into the next target on its own. Aardwolf's
-  // 'help policies7' names "read campaign information to automatically go to
-  // areas, find and kill mob" as botting, and an unattended target-to-target
-  // loop is exactly that. Stop here and let the player choose to continue.
   if(remaining.length){
-    appendOutput('[S&D] '+remaining.length+' target(s) left -- /xcp when you want the next one.\n','quest');
+    appendOutput('[S&D] '+remaining.length+' target(s) left'
+      + (sndState.autoRun ? '.' : ' -- /xcp when you want the next one.')+'\n','quest');
   } else {
     appendOutput('[S&D] no auto-navigable targets left.\n','quest');
   }
+  // Chaining past a FAILURE is what /xcpauto adds; without it the run stops here
+  // and waits to be told to continue, which is the default.
+  autoContinue('gave up on '+((t && t.mob) || 'a target'));
+}
+
+// -----------------------------------------------------------------------------
+// Running the campaign unattended (/xcpauto)
+// -----------------------------------------------------------------------------
+// Aardwolf's 'help policies7' names "read campaign information to automatically go
+// to areas, find and kill mob" as botting, and a loop that walks target to target
+// without a human in it is exactly that. It is off by default and only /xcpauto
+// turns it on. What the loop does about it: it stops on anything it does not
+// understand rather than thrashing, rests instead of fighting hurt, and gives up
+// after AUTO_FAIL_LIMIT failures in a row.
+const AUTO_FAIL_LIMIT = 3;      // consecutive abandoned targets before stopping
+const AUTO_GAP_MS = 6000;       // pause between targets
+const AUTO_PASSES = 2;          // times to re-try the targets it had to skip
+const REST_BELOW = 0.75;        // rest before the next target below this health
+const REST_UNTIL = 0.95;
+const REST_MANA  = 0.4;         // ...or this much mana
+const REST_TRIES = 40;          // ~5 minutes of ticks
+
+export function setAutoRun(on){
+  sndState.autoRun = !!on;
+  sndState.autoFails = 0;
+  sndState.autoPasses = 0;
+  if(!sndState.autoRun){
+    stopAutoWatch();
+    appendOutput('[S&D] auto-run off. /xcp runs one target at a time again.\n','system');
+    return;
+  }
+  startAutoWatch();
+  appendOutput('[S&D] auto-run ON: it will work through the campaign on its own,\n'
+    + '      resting when hurt and stopping after '+AUTO_FAIL_LIMIT+' failures in a row.\n','system');
+  appendOutput('[S&D] Aardwolf calls unattended campaign automation botting'
+    + " ('help policies7'). /xcpstop ends it.\n",'error');
+  // A fresh page has not read a `cp check` yet, so it does not know a campaign
+  // exists -- /xcpauto answered "Not on a campaign" while one was running. Ask
+  // first, then start: the whole point of this switch is that it needs no setup.
+  if(sndState.cpType === 'none' || !campaignTargets.length){
+    appendOutput('[S&D] reading the campaign first.\n','system');
+    doCpCheck();
+    setTimeout(()=>{
+      if(!sndState.autoRun) return;
+      if(!liveTargets().length){
+        appendOutput('[S&D] no campaign targets to work through. `cp check` to see why.\n','error');
+        sndState.autoRun = false;
+        stopAutoWatch();
+        return;
+      }
+      if(!sndState.pendingXcp) recoverThen(()=>xcpNext());
+    }, 4000);
+    return;
+  }
+  if(!sndState.pendingXcp) recoverThen(()=>xcpNext());
+}
+
+/** Rest to a fighting state before starting anything, then run `fn`. */
+function recoverThen(fn, tries){
+  const hp = hpFraction(), mana = manaFraction();
+  // Once resting has started, rest properly: getting back to 75% and standing up
+  // means the next fight starts a quarter down, and the fight after that starts
+  // lower again. Only the decision to START resting uses the lower number.
+  const need = tries ? REST_UNTIL : REST_BELOW;
+  if(hp >= need && mana >= REST_MANA){
+    if(tries) sendCmdRaw('stand');
+    setTimeout(fn, tries ? 1500 : 0);
+    return;
+  }
+  const n = (tries || 0) + 1;
+  if(n > REST_TRIES){
+    appendOutput('[S&D] still on '+Math.round(hp*100)+'% health after resting'
+      + ' -- stopping the auto-run rather than walking into a fight.\n','error');
+    sndState.autoRun = false;
+    stopAutoWatch();
+    return;
+  }
+  if(n === 1){
+    appendOutput('[S&D] '+Math.round(hp*100)+'% health, '+Math.round(mana*100)
+      + '% mana -- resting before the next target.\n','quest');
+    sendCmdRaw('rest');
+  }
+  setTimeout(()=>recoverThen(fn, n), 8000);
+}
+
+/**
+ * Move to the next target on our own, if the player asked for that.
+ *
+ * `ok` marks a target that actually died, which resets the failure counter: three
+ * failures in a row means something is wrong with the world or with us, while three
+ * failures spread across ten kills is just a campaign with awkward targets in it.
+ */
+function autoContinue(reason, ok){
+  if(!sndState.autoRun) return false;
+  if(ok) sndState.autoFails = 0;
+  else if(++sndState.autoFails >= AUTO_FAIL_LIMIT){
+    appendOutput('[S&D] '+AUTO_FAIL_LIMIT+' targets in a row went nowhere (last: '+reason
+      + ') -- stopping. /xcpauto to start again once you have looked.\n','error');
+    sndState.autoRun = false;
+    stopAutoWatch();
+    return false;
+  }
+  if(!liveTargets().length){
+    // Everything left was skipped rather than killed. A skip is often temporary --
+    // a mob that had not repopped, a route not learned yet -- so try the list again
+    // before declaring the campaign as far as it goes.
+    const skipped = campaignTargets.filter(x => !x.is_dead && x.skipped);
+    if(skipped.length && (sndState.autoPasses||0) < AUTO_PASSES){
+      sndState.autoPasses = (sndState.autoPasses||0) + 1;
+      appendOutput('[S&D] nothing left but the '+skipped.length+' target(s) that failed;'
+        + ' trying them again (pass '+sndState.autoPasses+' of '+AUTO_PASSES+').\n','quest');
+      for(const s of skipped) s.skipped = null;
+    } else {
+      appendOutput('[S&D] auto-run finished: nothing left it can reach.'
+        + ' `cp check` for what remains.\n','quest');
+      sndState.autoRun = false;
+      stopAutoWatch();
+      return false;
+    }
+  }
+  appendOutput('[S&D] auto-run: next target in '+Math.round(AUTO_GAP_MS/1000)+'s.\n','system');
+  sndState.autoNextAt = Date.now() + AUTO_GAP_MS;
+  setTimeout(()=>{
+    sndState.autoNextAt = 0;
+    if(!sndState.autoRun) return;
+    recoverThen(()=>xcpNext());
+  }, AUTO_GAP_MS);
+  return true;
+}
+
+// A watchdog rather than a chain at every dead end.
+//
+// Six places give up on a target by nulling pendingXcp and printing why -- the copy
+// sweep running out, the walking sweep's room budget, the health gate failing to
+// recover, a mid-fight bail, the twin sweep exhausting its rooms, the quest tag cap.
+// Patching each one to also continue would mean six chances to miss the next one
+// somebody adds. This notices that nothing is running and picks the campaign back
+// up, which covers all of them and anything future.
+const AUTO_WATCH_MS = 15000;
+const AUTO_IDLE_MS  = 25000;
+const AUTO_STALL_MS = 90000;   // a target assigned but nothing moving
+let autoWatch = null;
+
+function startAutoWatch(){
+  if(autoWatch) return;
+  autoWatch = setInterval(()=>{
+    if(!sndState.autoRun){ stopAutoWatch(); return; }
+    // A target still assigned is not proof anything is happening. Several failure
+    // paths print a reason and leave pendingXcp set; the run then sits still with
+    // a target it is not working on, which is indistinguishable from progress
+    // unless you watch the room. So watch the room: no movement, no walk and no
+    // fight for STALL_MS means it is not going to start on its own.
+    if(sndState.pendingXcp){
+      sndState.autoIdleSince = 0;
+      const here = String(currentRoom.uid || '') + '|' + String(charState);
+      if(here !== sndState.autoLastWhere || isWalking() || charState === STATE_FIGHTING){
+        sndState.autoLastWhere = here;
+        sndState.autoStillSince = Date.now();
+        return;
+      }
+      if(!sndState.autoStillSince){ sndState.autoStillSince = Date.now(); return; }
+      if(Date.now() - sndState.autoStillSince < AUTO_STALL_MS) return;
+      sndState.autoStillSince = 0;
+      const stuck = sndState.pendingXcp;
+      appendOutput('[S&D] auto-run: '+(stuck.mob||'the target')+' has not moved anything for '
+        + Math.round(AUTO_STALL_MS/1000)+'s -- giving up on it and carrying on.\n','error');
+      xcpAbandonTarget(stuck, 'stalled');
+      return;
+    }
+    sndState.autoStillSince = 0;
+    if(sndState.autoNextAt && Date.now() < sndState.autoNextAt + AUTO_IDLE_MS) return;
+    if(isWalking() || charState === STATE_FIGHTING){ sndState.autoIdleSince = 0; return; }
+    if(!sndState.autoIdleSince){ sndState.autoIdleSince = Date.now(); return; }
+    if(Date.now() - sndState.autoIdleSince < AUTO_IDLE_MS) return;
+    sndState.autoIdleSince = 0;
+    appendOutput('[S&D] auto-run: nothing has been running for '
+      + Math.round(AUTO_IDLE_MS/1000)+'s -- picking the campaign back up.\n','system');
+    autoContinue('the run stalled', false);
+  }, AUTO_WATCH_MS);
+}
+
+function stopAutoWatch(){
+  if(autoWatch){ clearInterval(autoWatch); autoWatch = null; }
+  sndState.autoIdleSince = 0;
 }
 
 /**
@@ -1277,6 +1531,21 @@ export function followEntryHint(t, hint){
                         {noAreaHop:true});
             return;
           }
+        }
+        // A recorded command beats a guessed one. The note names a landmark, but
+        // the way through it is an ordinary exit and nothing derives one from the
+        // other: The DarkLight's note says "Look for the Andromeda Galaxy in
+        // Vidblain. Coords 14,23." and the way in from there is `d`. See
+        // setEntryDir/SEED_ENTRIES in areas.js.
+        if(hint.dir && !t.entryDirTried){
+          t.entryDirTried = true;
+          appendOutput('[S&D] at '+hint.x+','+hint.y+'; the recorded way in is "'
+            + hint.dir+'".\n','quest');
+          const cmds = String(hint.dir).split(';').map(c=>c.trim()).filter(Boolean);
+          let d = 0;
+          for(const c of cmds){ setTimeout(()=>sendCmd(c), d); d += 1200; }
+          setTimeout(()=>{ if(sndState.pendingXcp===t){ t.recallSent = true; xcpStep(t); } }, d+1500);
+          return;
         }
         // Nothing learned yet, so fall back to the landmark. One attempt only:
         // re-entering xcpStep on failure sent the character round the whole

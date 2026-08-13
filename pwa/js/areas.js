@@ -270,10 +270,10 @@ export function entryHint(areaName){
   const n = stripAnsi(String(areaName)).trim().toLowerCase();
   try {
     const r = sqlDb.exec(
-      'SELECT entry_note, entry_area, entry_x, entry_y, norunto, entry_landmark, entry_item'
-      + ' FROM areas WHERE name=? OR key=? LIMIT 1', [n, n]);
+      'SELECT entry_note, entry_area, entry_x, entry_y, norunto, entry_landmark, entry_item,'
+      + ' entry_dir FROM areas WHERE name=? OR key=? LIMIT 1', [n, n]);
     if(!r.length || !r[0].values.length) return null;
-    const [note, area, x, y, norunto, landmark, item] = r[0].values[0];
+    const [note, area, x, y, norunto, landmark, item, dir] = r[0].values[0];
     if(!note && !norunto) return null;
     // Rows stored before entry_item existed still carry the note, so derive the
     // item from it rather than making the player provoke a fresh refusal. Only
@@ -284,6 +284,63 @@ export function entryHint(areaName){
       useItem = (String(note).match(NOTE_ITEM) || [])[1] || null;
     }
     return {note: note || null, area: area || null, x, y,
-            norunto: !!norunto, landmark: landmark || null, item: useItem};
+            norunto: !!norunto, landmark: landmark || null, item: useItem,
+            dir: dir || null};
   } catch(e){ return null; }
+}
+
+/**
+ * Record how to get INTO an area once you are standing at its entrance.
+ *
+ * The note the game gives is not always the whole answer. For The DarkLight it
+ * says "Look for the Andromeda Galaxy in Vidblain. Coords 14,23." -- and at that
+ * coordinate the way in is `d`, not `enter galaxy`. Same shape as the Zenith Trail
+ * pitfall in snd.js: the landmark names a thing, the way through it is an ordinary
+ * exit, and no rule derives one from the other. So it has to be told, once.
+ *
+ * `dir` is a command list: 'd', or 'open gate;n', or 'u;u'.
+ */
+export function setEntryDir(areaName, dir, opts){
+  if(!sqlDb || !areaName) return false;
+  const n = stripAnsi(String(areaName)).trim().toLowerCase();
+  const via = (opts && opts.via) || null;
+  const x = opts && opts.x != null ? opts.x : null;
+  const y = opts && opts.y != null ? opts.y : null;
+  const note = (opts && opts.note) || null;
+  try {
+    sqlDb.run(
+      `INSERT INTO areas(name, key, norunto, entry_dir, entry_area, entry_x, entry_y, entry_note)
+         VALUES (?,?,1,?,?,?,?,?)
+       ON CONFLICT(name) DO UPDATE SET norunto=1, entry_dir=excluded.entry_dir,
+         entry_area=COALESCE(excluded.entry_area, areas.entry_area),
+         entry_x=COALESCE(excluded.entry_x, areas.entry_x),
+         entry_y=COALESCE(excluded.entry_y, areas.entry_y),
+         entry_note=COALESCE(excluded.entry_note, areas.entry_note)`,
+      [n, areaRuntoKeyword(areaName) || n, String(dir||'').trim(), via, x, y, note]);
+    return true;
+  } catch(e){ console.error('setEntryDir error', e); return false; }
+}
+
+// Entries the game's own note does not fully describe. Seeded once per database so
+// the first attempt works instead of walking to the coordinate and guessing.
+const SEED_ENTRIES = [
+  // Both of these are Vidblain continent entrances, and both are the same trap:
+  // the note names a landmark, walking to the coordinate puts you IN the landmark
+  // room, and the way through is an ordinary exit that the landmark's name does
+  // not suggest. `enter galaxy` and `enter trail` are both refused.
+  { area: 'The DarkLight', via: 'Vidblain', x: 14, y: 23, dir: 'd',
+    note: 'Look for the Andromeda Galaxy in Vidblain. Coords 14,23. Then DOWN from the entrance.' },
+  // Watched live: the helper reached Zenith Trail at 10,15, tried `enter trail`,
+  // was refused, and abandoned the target -- twice in one auto-run.
+  { area: 'The Keep of the Asherodan', via: 'Vidblain', x: 10, y: 15, dir: 'u',
+    note: 'Look for the Zenith Trail in Vidblain. Coords 10,15. Then UP from the trail.' },
+];
+
+export function seedEntryHints(){
+  if(!sqlDb) return;
+  for(const e of SEED_ENTRIES){
+    const have = entryHint(e.area);
+    if(have && have.dir) continue;              // already known, do not overwrite
+    setEntryDir(e.area, e.dir, {via: e.via, x: e.x, y: e.y, note: e.note});
+  }
 }
