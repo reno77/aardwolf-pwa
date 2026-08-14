@@ -47,6 +47,8 @@ export function startMedic(args){
     heals: (parts[0] || 'clorox').split(',').map(s => s.trim()).filter(Boolean),
     healIdx: 0,
     mana: parts[1] || 'lotus',
+    manaOut: false,          // set once the game says there are none left
+    lastAction: null,
     last: 0, heals_cast: 0, quaffs: 0, manas: 0,
   };
   if(!unsubscribe) unsubscribe = onInterval(1000, tick);
@@ -78,7 +80,23 @@ export function isMedicOn(){ return !!watch; }
 export function parseMedicOutput(text){
   if(!watch) return;
   if(!/you (?:do not|don'?t) have that potion/i.test(String(text || ''))) return;
-  if(watch.healIdx >= watch.heals.length - 1) return;      // nothing left to fall back to
+  // WHICH potion ran out decides what to do, so the answer is matched to the last
+  // thing sent. Without that, an empty mana flask read as an empty healing flask and
+  // the loop quaffed at nothing twenty times in a row -- one wasted command per round,
+  // in rooms where a round is the difference.
+  if(watch.lastAction === 'mana'){
+    if(watch.manaOut) return;
+    watch.manaOut = true;
+    say('out of "' + watch.mana + '" -- no more mana potions, healing only from here.', 'quest');
+    return;
+  }
+  if(watch.healIdx >= watch.heals.length - 1){
+    if(!watch.healsOut){
+      watch.healsOut = true;
+      say('out of healing potions entirely -- you are on spells and luck now.', 'error');
+    }
+    return;
+  }
   watch.healIdx++;
   say('out of "' + watch.heals[watch.healIdx - 1] + '" -- switching to "'
       + watch.heals[watch.healIdx] + '".', 'quest');
@@ -92,8 +110,8 @@ function tick(){
 
   // Potion first when it is serious: it works with an empty mana bar, and at this
   // point the question is not efficiency, it is whether the next round lands.
-  if(hp < QUAFF_AT){
-    watch.last = now; watch.quaffs++;
+  if(hp < QUAFF_AT && !watch.healsOut){
+    watch.last = now; watch.quaffs++; watch.lastAction = 'heal';
     sendCmdRaw('quaff ' + watch.heals[watch.healIdx]);
     return;
   }
@@ -104,8 +122,8 @@ function tick(){
   }
   // Only top the mana up mid-fight, or while hurt. Standing at full health with a
   // half-empty bar is what resting is for.
-  if(mana < MANA_AT && (charState === STATE_FIGHTING || hp < HEAL_AT)){
-    watch.last = now; watch.manas++;
+  if(mana < MANA_AT && !watch.manaOut && (charState === STATE_FIGHTING || hp < HEAL_AT)){
+    watch.last = now; watch.manas++; watch.lastAction = 'mana';
     sendCmdRaw('quaff ' + watch.mana);
     return;
   }
