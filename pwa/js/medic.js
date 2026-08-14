@@ -38,14 +38,21 @@ function say(msg, cls){ appendOutput('[medic] ' + msg + '\n', cls || 'system'); 
 export function startMedic(args){
   const parts = String(args || '').trim().split(/\s+/).filter(Boolean);
   if(/^(off|stop|no)$/i.test(parts[0] || '')){ stopMedic('asked to stop'); return; }
+  // Several healing potions, tried in order. A run through the gauntlet needs more
+  // healing than the 399-item cap allows of any one kind, and the way the last attempt
+  // ended was three quaffs answering "You don't have that potion" at 6% health, with a
+  // bag of perfectly good trivia potions unused because the medic only knew one word.
+  // `/medic trivia,clorox lotus` drinks the trivia ones first and moves on when they run out.
   watch = {
-    heal: parts[0] || 'clorox',
+    heals: (parts[0] || 'clorox').split(',').map(s => s.trim()).filter(Boolean),
+    healIdx: 0,
     mana: parts[1] || 'lotus',
-    last: 0, heals: 0, quaffs: 0, manas: 0,
+    last: 0, heals_cast: 0, quaffs: 0, manas: 0,
   };
   if(!unsubscribe) unsubscribe = onInterval(1000, tick);
   say('watching your health. heal below ' + Math.round(HEAL_AT*100)
-      + '%, quaff "' + watch.heal + '" below ' + Math.round(QUAFF_AT*100)
+      + '%, quaff ' + watch.heals.map(h => '"'+h+'"').join(' then ') + ' below '
+      + Math.round(QUAFF_AT*100)
       + '%, drink "' + watch.mana + '" below ' + Math.round(MANA_AT*100) + '% mana.', 'quest');
   say('/medic off to stop.');
 }
@@ -55,11 +62,27 @@ export function stopMedic(why){
   const w = watch;
   watch = null;
   if(unsubscribe){ unsubscribe(); unsubscribe = null; }
-  say('stopped' + (why ? ' -- ' + why : '') + '. ' + w.heals + ' heal(s), '
+  say('stopped' + (why ? ' -- ' + why : '') + '. ' + w.heals_cast + ' heal(s), '
       + w.quaffs + ' potion(s), ' + w.manas + ' mana potion(s).', 'quest');
 }
 
 export function isMedicOn(){ return !!watch; }
+
+/**
+ * Feed MUD output here: notice a potion running out and move to the next kind.
+ *
+ * The alternative is discovering it at 6% health, which is where the last gauntlet run
+ * ended -- three quaffs in a row answered "You don't have that potion" while the
+ * character died holding a bag of other healing potions.
+ */
+export function parseMedicOutput(text){
+  if(!watch) return;
+  if(!/you (?:do not|don'?t) have that potion/i.test(String(text || ''))) return;
+  if(watch.healIdx >= watch.heals.length - 1) return;      // nothing left to fall back to
+  watch.healIdx++;
+  say('out of "' + watch.heals[watch.healIdx - 1] + '" -- switching to "'
+      + watch.heals[watch.healIdx] + '".', 'quest');
+}
 
 function tick(){
   if(!watch) return;
@@ -71,11 +94,11 @@ function tick(){
   // point the question is not efficiency, it is whether the next round lands.
   if(hp < QUAFF_AT){
     watch.last = now; watch.quaffs++;
-    sendCmdRaw('quaff ' + watch.heal);
+    sendCmdRaw('quaff ' + watch.heals[watch.healIdx]);
     return;
   }
   if(hp < HEAL_AT && mana > MANA_AT){
-    watch.last = now; watch.heals++;
+    watch.last = now; watch.heals_cast++;
     sendCmd('cast heal');
     return;
   }

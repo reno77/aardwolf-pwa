@@ -20,7 +20,7 @@ import { commandMap } from './state.js';
 import { doXq, parseQuestRoomOutput, parseQuestStatusOutput, questInfo } from './quest.js';
 import { noteRoomChars } from './questtag.js';
 import { startGrind, stopGrind } from './grind.js';
-import { startMedic, stopMedic } from './medic.js';
+import { parseMedicOutput, startMedic, stopMedic } from './medic.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
 import { cleanKeyring, parseKeyringOutput, showKeyring } from './keyring.js';
 import { parseRoomOrdinalOutput } from './roomord.js';
@@ -555,6 +555,7 @@ export function handleMessage(msg){
       parseKeyFetchOutput(msg.text);   // did the key actually come out of the box
       parseKeyMobOutput(msg.text);     // ...or off the mob that was carrying it
       noteRoomChars(msg.text);         // who is standing here, for the door-guard case
+      parseMedicOutput(msg.text);     // a healing potion just ran out
       parseQuestRoomOutput(msg.text);  // which copy here wears the [Quest] tag
       parseQuestStatusOutput(msg.text); // may we have a quest, and did we get one
       parseEntryItemOutput(msg.text);  // readying a held portal such as the amulet
