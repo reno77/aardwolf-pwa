@@ -224,7 +224,16 @@ function areaNamedIn(note){
       const phrase = words.slice(i, i + len).join(' ');
       if(phrase.length < 4) continue;
       const hit = lookupArea(phrase);
-      if(hit && !hit.guessed) return phrase;
+      // The window has to BE the area, not merely appear inside one. lookupArea's last
+      // resort is `name LIKE '%phrase%'`, and "of the" is a substring of a dozen area
+      // names -- so "Use the Amulet of the Planes" was read as an instruction to travel
+      // to an area called "of the", and the run reported "get there yourself (via of
+      // the)" about a target whose note says exactly which item to use.
+      if(!hit || hit.guessed) continue;
+      const p = phrase.toLowerCase();
+      if(String(hit.name || '').toLowerCase() === p || String(hit.key || '').toLowerCase() === p){
+        return phrase;
+      }
     }
   }
   return null;
@@ -309,7 +318,22 @@ export function entryHint(areaName){
     // target was abandoned for "runto refused before" every time, with the answer sitting
     // in the note the whole while. Re-read the note rather than making the player provoke
     // a fresh refusal to get the row rewritten.
+    // A stored area has to still be an area. Rows written while areaNamedIn accepted
+    // any substring hold junk -- "Use the Amulet of the Planes" was filed under an
+    // area called "of the" -- and a bad stored value is worse than none: it blocks the
+    // re-derivation below AND sends followEntryHint off to runto nothing. Validate on
+    // read, so the rows already on disk heal themselves rather than needing a wipe.
     let useArea = area || null;
+    if(useArea){
+      const known = lookupArea(useArea);
+      const ua = String(useArea).toLowerCase();
+      const real = known && !known.guessed
+        && (String(known.name || '').toLowerCase() === ua || String(known.key || '').toLowerCase() === ua);
+      if(!real){
+        useArea = null;
+        try { sqlDb.run('UPDATE areas SET entry_area=NULL WHERE name=? OR key=?', [n, n]); } catch(e){}
+      }
+    }
     let ux = x, uy = y;
     if(!useArea && note){
       useArea = areaNamedIn(note);

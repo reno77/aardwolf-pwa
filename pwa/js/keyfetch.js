@@ -314,6 +314,16 @@ export function parseKeyMobOutput(text){
       rooms.push(room);
     }
     if(!rooms.length) return;                        // more of the reply may be coming
+    // The note often says WHICH one: "an Imperial city guard who patrols Finian Lane".
+    // Try that sighting first -- the others are the same mob name and the wrong mob.
+    const wantRoom = st.gate && st.gate.source && st.gate.source.room;
+    if(wantRoom){
+      const i = rooms.findIndex(r => r.toLowerCase().includes(String(wantRoom).toLowerCase()));
+      if(i > 0){
+        rooms.unshift(rooms.splice(i, 1)[0]);
+        appendOutput('[S&D] the map says it is the one in '+wantRoom+'; trying that first.\n','quest');
+      }
+    }
     st.stage = 'goto'; st.ts = Date.now();
     st.rooms = rooms;
     appendOutput('[S&D] '+st.mob+' is in '+rooms[0]
@@ -411,6 +421,16 @@ export function parseKeyMobOutput(text){
       sndState.pendingKeyFetch = null;
       appendOutput('[S&D] '+st.mob+' is dead but '+(st.keyName||'the key')
         + ' was not on it. '+(st.note||'')+'\n','error');
+      // ...so try the NEXT one. A name like "an Imperial city guard" is worn by half a
+      // dozen mobs in the area and only one of them carries the key -- the note says
+      // which ("who patrols Finian Lane") -- so killing the first one met and stopping
+      // is the one outcome guaranteed to fail. `where` already listed the others.
+      if(st.rooms && st.rooms.length){
+        appendOutput('[S&D] '+st.rooms.length+' more place(s) that name was seen; trying the next.\n','quest');
+        st.stage = 'goto'; st.ts = Date.now();
+        sndState.pendingKeyMob = st;
+        gotoKeyMobRoom(st);
+      }
     }, 9000);
     return;
   }

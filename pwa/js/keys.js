@@ -46,6 +46,12 @@ const MOB = [
   /^(.+?)\s+(?:has|holds)\s+th(?:is|e)\s+(?:key|keyring|keys)\b/i,
   /^(.+?)\s+is\s+carrying\s+th(?:is|e)\s+(?:key|keyring|keys)\b/i,
   /^(?:it(?:'s| is)?\s+)?on\s+(?:the\s+)?(.+?)\s*[.,]?$/i,
+  // "Found on an Imperial city guard who patrols Finian Lane." -- the bare shape, with
+  // no "key" in the sentence for the patterns above to anchor on. Eight of the 310 key
+  // notes are written this way, and the Imperial Nation one held up a campaign target:
+  // the map named the mob, the room we were standing in, and the client read it as
+  // "unknown" and gave up on the door.
+  /^found\s+(?:on|with)\s+(?:a\s+|an\s+|the\s+)?(.+?)\s*[.,]?$/i,
 ];
 // "The key is in Rydra's inventory.", "found in the ogre guard's inventory" -- the
 // possessive is the tell, and it means a creature however the sentence is built.
@@ -76,7 +82,23 @@ const QUEST = [/^a\/?q\b/i, /\barea quest\b/i, /\bquest\b[^.]*\bobtain\b/i];
 
 // Prose that trails a mob name: ", who wanders around near the magic shop",
 // " or Mr. Spade in the Manager's Office", " in the Manager's Office".
-const TRAIL = /,\s*(?:who|which|that)\b|\s+or\s+|\s+in\s+the\s+/i;
+//
+// The comma is optional and a parenthesis counts too. "an Imperial city guard who
+// patrols Finian Lane" has neither a comma nor a "the", so the whole sentence survived
+// as the mob name and the keyword search went looking for a creature called that.
+const TRAIL = /,?\s*\b(?:who|which|that)\b|\s+or\s+|\s+in\s+the\s+|\s+within\s+|\s*\(/i;
+
+// Where the note says that mob is. "an Imperial city guard who patrols Finian Lane"
+// is not one guard among many, it is THE guard, and the area has several: the errand
+// killed one in Before the Imperial Castle, found no key on it, and stopped. `where`
+// lists every sighting, so naming the right room is the whole difference between one
+// kill and a wrong one.
+const MOB_ROOM = /\b(?:patrols|patrolling|wanders?(?:\s+around)?(?:\s+in)?|stands?)\s+(?:in|around|near|the)?\s*([A-Z][\w' -]{3,40}?)\s*[.,)]/;
+
+function mobRoom(note){
+  const m = String(note || '').match(MOB_ROOM);
+  return m ? m[1].trim() : null;
+}
 
 function tidyMob(raw){
   let mob = String(raw || '').trim().replace(/^['"]|['"]$/g, '');
@@ -129,7 +151,7 @@ export function parseKeySource(rawNote){
     // Guard against fragments: too short to be a name, or a container rather
     // than a creature.
     if(mob.length > 2 && mob.length < 60 && !/^(the\s+)?(chest|ground|floor|room)\b/i.test(mob)){
-      return {kind: 'mob', note, mob};
+      return {kind: 'mob', note, mob, room: mobRoom(note)};
     }
   }
   return {kind: 'unknown', note};

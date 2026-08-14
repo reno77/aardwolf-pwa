@@ -23,9 +23,23 @@ import { appendOutput, stripAnsi, togglePanel } from './ui.js';
 import { noteArrival } from './plane.js';
 // --- state owned by this module ---
 export let campaignTargets=[]; // S&D target list, built from cp info + cp check
-// `wear wpn 2` was two arguments, so it never referred to the wpn2 alias at all.
-// Both weapon slots now go through their aliases (wpn -> poly, wpn2 -> poly2).
-export const DEFAULT_RECALL = 'wear garbage;enter;rem garbage;wear wpn;wear wpn2';
+// The portal to Aylor -- the player's own `rec` alias, not a copy of it.
+//
+// This used to spell the sequence out here, and the spelled-out version went stale the
+// moment the character changed weapons: it re-wore through `wpn`/`wpn2`, which by then
+// pointed at gear no longer carried, so every recall left the character unarmed. Worse,
+// the corrected version lived in localStorage, so a fresh browser profile silently fell
+// back to the stale default and the first refusal of the day was "You do not have that
+// item" again.
+//
+// The alias is the better home for it on both counts: it is one place to change when the
+// gear changes, and aliases live in the synced database, so a new device gets the working
+// sequence with everything else. Only the pointer lives here.
+//
+// (The route is a portal rather than `recall` because `recall` is wrong for this
+// character: in a clan it goes to CLAN recall, and it costs half the movement bar.
+// `/recallseq <sequence>` still overrides this per device.)
+export const DEFAULT_RECALL = 'rec';
 export let sndState={cpType:'none', cpLevel:0, xcpIndex:0, autoRun:false, autoFails:0, autoPasses:0, xcpMode:localStorage.getItem('xcp_mode')||'ch', recallSequence:fixStoredRecall(localStorage.getItem('recall_sequence'))||DEFAULT_RECALL};
 
 /** Repair a stored sequence that carries the `wear wpn 2` typo. */
