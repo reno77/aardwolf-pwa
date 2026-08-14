@@ -212,10 +212,25 @@ function move(avoidBack){
   let choices = exits;
   if((avoidBack || exits.length > 1) && back) choices = exits.filter(d => d !== back);
   if(!choices.length) choices = exits;
-  // Round-robin rather than random: Math.random is not available to workflow code and
-  // a fixed rotation covers an area more evenly than repeated coin flips anyway.
-  run.turn = ((run.turn || 0) + 1) % choices.length;
-  const dir = choices[run.turn];
+
+  // LEAST-USED exit from THIS room, not a rotation across rooms.
+  //
+  // A single counter shared by every room walks a groove: in Elemental Canyon's 3x3
+  // block it worked the middle and bottom rows over and over and never once went to
+  // the top, so a third of the mobs were never pulled. Counting per room and per
+  // direction makes the walk fan out -- a grid gets covered because the exit taken
+  // least often from where we are standing is, by definition, the way we have been
+  // neglecting.
+  const here = String(currentRoom.uid || currentRoom.name || '?');
+  run.taken = run.taken || new Map();
+  if(!run.taken.has(here)) run.taken.set(here, new Map());
+  const used = run.taken.get(here);
+  let dir = choices[0], fewest = Infinity;
+  for(const d of choices){
+    const n = used.get(d) || 0;
+    if(n < fewest){ fewest = n; dir = d; }
+  }
+  used.set(dir, (used.get(dir) || 0) + 1);
   run.lastDir = dir;
   sendCmdRaw(dir);
   schedule(STEP_MS);
