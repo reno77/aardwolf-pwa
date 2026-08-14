@@ -19,6 +19,7 @@ import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './din
 import { commandMap } from './state.js';
 import { doXq, parseQuestRoomOutput, parseQuestStatusOutput, questInfo } from './quest.js';
 import { noteRoomChars } from './questtag.js';
+import { startGrind, stopGrind } from './grind.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
 import { cleanKeyring, parseKeyringOutput, showKeyring } from './keyring.js';
 import { parseRoomOrdinalOutput } from './roomord.js';
@@ -237,6 +238,8 @@ const HELP = [
     { cmds: ['runto', 'goto'], args: '<room name>', what: 'walk to a room by name, using the map' },
     { cmds: ['navto'], args: '[uid|room name]', what: 'walk to a room by its game number (exact) or by name; no argument prints the number of the room you are in, which is how you note one for later' },
     { cmds: ['navcoord'], args: '<x>,<y>', what: 'steer to a coordinate -- for continents and other areas the map does not cover, where every room reports its own position' },
+    { cmds: ['grind'], args: '<level>', what: 'walk this area killing what your triggers attack, resting when hurt, until that level -- skips any room another player is standing in' },
+    { cmds: ['grindstop'], args: '', what: 'stop the grind' },
     { cmds: ['navdiag'], args: '[room name]', what: 'why can it not path there: client build, this room and its edges, what it has been identified as, and the route to the named room' },
     { cmds: ['map'], args: '', what: 'the full-screen map' },
     { cmds: ['rooms'], args: '', what: 'the rooms panel; tap one to walk there' },
@@ -376,6 +379,8 @@ export function submitCmd(){
     if(cmd==='xcpstop'){ setAutoRun(false); return; }
     if(cmd==='areas'){ harvestAreaKeywords(); return; }
     if(cmd==='navdiag'){ navDiag(parts.slice(1).join(' ').trim()); return; }
+    if(cmd==='grind'){ startGrind(parts.slice(1).join(' ')); return; }
+    if(cmd==='grindstop'){ stopGrind('asked to stop'); return; }
     // The whole argument, not parts[1]: a room name has spaces in it, and
     // `/navto Inside the Kitchen` used to search for a room called "Inside".
     if(cmd==='navto'){ doNavTo(parts.slice(1).join(' ')); return; }
