@@ -428,6 +428,41 @@ function refStepCost(dir, random){
   return (random ? REF_RANDOM_COST : 0) + base;
 }
 
+
+/**
+ * Edges the walker has already found impassable, as reference-map (local_id, dir) pairs.
+ *
+ * The local graph records them -- `level=999` is the "never auto-path" marker nav.js sets
+ * when a door turns out to be locked and keyless -- but the reference map knows nothing
+ * about them, so the fallback router kept proposing the same locked door. In the
+ * Gladiator's Arena that is not a corner case: the Peasants' Seating door needs a master
+ * key carried by the troll standing in front of it, and there is a perfectly good way in
+ * from the east side that the router would never offer while it believed in the door.
+ */
+function blockedRefEdges(areaid){
+  if(!sqlDb) return new Set();
+  const out = new Set();
+  try {
+    const r = sqlDb.exec(
+      `SELECT m.gaardian_local_id, e.dir
+         FROM exits e
+         JOIN room_gaardian_map m ON m.aardwolf_uid = e.from_uid
+        WHERE e.level = 999 AND m.gaardian_areaid = ?`, [areaid]);
+    for(const [localId, dir] of (r[0]?.values || [])) out.add(localId + '|' + dir);
+  } catch(e){ /* nothing learned yet */ }
+  // Synthetic rows, for an area imported but never walked.
+  try {
+    const r = sqlDb.exec(
+      "SELECT from_uid, dir FROM exits WHERE level = 999 AND from_uid LIKE 'gaardian:' || ? || ':%'",
+      [String(areaid)]);
+    for(const [uid, dir] of (r[0]?.values || [])){
+      const m = String(uid).match(/^gaardian:\d+:(\d+)$/);
+      if(m) out.add(parseInt(m[1]) + '|' + dir);
+    }
+  } catch(e){ /* ditto */ }
+  return out;
+}
+
 export function gaardianPath(fromUid, toUid, maxDepth){
   if(!gaardianDb) return null;
   const froms = gaardianIdsFor(fromUid);
@@ -447,6 +482,7 @@ export function gaardianPath(fromUid, toUid, maxDepth){
       // for the same reason. Hop-counting picked Kobold Siege Camp's `say glurpp`
       // teleport over a walk three steps longer; this fallback would have gone on
       // recommending it after findPath stopped.
+      const blocked = blockedRefEdges(fArea);
       const cameFrom = new Map();              // local_id -> {dir, next}
       const best2 = new Map([[tLocal, 0]]);
       const settled = new Set();
@@ -478,6 +514,7 @@ export function gaardianPath(fromUid, toUid, maxDepth){
             if(settled.has(from)) continue;
             const dir = dirForExit(type, action);
             if(!dir) continue;
+            if(blocked.has(from + '|' + dir)) continue;   // already proved impassable
             const next = cost + refStepCost(dir, rnd);
             if(next > depth) continue;
             const known = best2.get(from);

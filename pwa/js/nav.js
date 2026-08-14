@@ -1061,7 +1061,22 @@ export function onMudText(text){
     if(b.norecall && currentRoom.uid){
       try { sqlDb.run('UPDATE rooms SET norecall=1 WHERE uid=?', [currentRoom.uid]); } catch(e){}
     }
-    if(b.open && walk.lastDir && !isCustomExit(walk.lastDir) && !walk.opened){
+    // "The door is closed." -- open it and go through.
+    //
+    // This used to share the `opened` latch with the SPECULATIVE open in step(), which
+    // fires when the map has a direction GMCP does not list. Both happen at the same
+    // door: the speculative open spends the latch, the real refusal arrives with it
+    // already set, and the walk ends on "movement blocked" in front of a door that
+    // would have opened. That is the Peasants' Seating door in the arena, where a troll
+    // shuts it behind you, so it is closed EVERY time you arrive.
+    //
+    // Counted per door instead, so each one gets its own attempts and a door that keeps
+    // swinging shut still cannot loop forever.
+    const openKey = String(walk.lastFrom || '') + '|' + String(walk.lastDir || '');
+    walk.openTries = walk.openTries || new Map();
+    const opens = walk.openTries.get(openKey) || 0;
+    if(b.open && walk.lastDir && !isCustomExit(walk.lastDir) && opens < 2){
+      walk.openTries.set(openKey, opens + 1);
       walk.opened = true;
       unspendLastStep();
       sendCmdRaw('open ' + walk.lastDir);
