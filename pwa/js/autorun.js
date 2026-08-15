@@ -136,7 +136,19 @@ function recoverThen(fn, tries){
   // budget, which then stopped the run for "still on 77% after resting". A heal is
   // ~257hp for ~35 mana, and the character stands there with 2389 of it: three casts
   // do what seven minutes of sleep does. Sleep is what happens once the mana is gone.
-  if(mana > 0.25){
+  // Only cast when the cast has something to do.
+  //
+  // Mana buys health and movement; nothing buys mana except time. So when mana is the
+  // ONLY thing short, casting is not "spending it usefully", it is the reason the wait
+  // never ends. `cast heal` at full health answers "You are already fully healed." and
+  // still costs ~35 mana, and this branch used to reach it whenever health and movement
+  // were both fine: mana recovered past 25%, stood the character up, got burned on no-op
+  // heals, fell back under 25%, slept, recovered past 25% again -- around and around,
+  // never once reaching REST_MANA and never starting a target. Observed doing exactly
+  // that with a 13-target campaign waiting and health pinned at 100%.
+  const wantHeal    = hp < need;
+  const wantRefresh = moves < REST_MOVES;
+  if(mana > 0.25 && (wantHeal || wantRefresh)){
     if(sndState.autoRestMode !== 'heal'){
       sndState.autoRestMode = 'heal';
       appendOutput('[S&D] healing rather than waiting -- '+Math.round(mana*100)
@@ -148,8 +160,8 @@ function recoverThen(fn, tries){
     // dead: 37 movement points of 3129, every step refused, and a recovery that could only
     // sleep and wait. Health still wins when both are low -- walking somewhere hurt is worse
     // than waiting a tick longer.
-    if(hp >= need && moves < REST_MOVES) sendCmd('cast refresh');
-    else sendCmd('cast heal');
+    if(wantHeal) sendCmd('cast heal');
+    else sendCmd('cast refresh');
   } else if(sndState.autoRestMode !== 'sleep'){
     sndState.autoRestMode = 'sleep';
     appendOutput('[S&D] out of mana; sleeping the rest off.\n','quest');

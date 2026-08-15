@@ -76,6 +76,18 @@ function say(msg, cls){ appendOutput('[grind] ' + msg + '\n', cls || 'system'); 
 
 /** `/grind <level>` -- kill what is here until that level, then stop. */
 export function startGrind(arg){
+  // "/grind off" has to STOP, not print usage.
+  //
+  // The stop command is `/grindstop`, but every other long-running helper here takes
+  // `off` (`/medic off`, `/autorun off`), so `off` is what gets typed under pressure --
+  // and when it answered with a usage line, the grind was still walking while the
+  // player believed it had stopped. It kept roaming for another few hundred rooms.
+  // A stop word that is ignored is worse than no stop word at all.
+  if(/^(?:off|stop|no|end|halt)$/i.test(String(arg || '').trim())){
+    if(!run) say('not grinding.', 'quest');
+    stopGrind('asked to stop');
+    return;
+  }
   const target = parseInt(String(arg || '').match(/\d+/) || [], 10);
   if(!target){
     say('usage: /grind <level to stop at>, e.g. /grind 91', 'error');
@@ -188,6 +200,37 @@ function step(){
   move(false);
 }
 
+/**
+ * Feed MUD output here: notice a refused move and stop using that exit.
+ *
+ * MAX_FAILS is the backstop. Remembering refusals should be enough on its own, but
+ * "enough on its own" is exactly what was believed about the least-used counter, and
+ * the failure mode is a bot hammering a wall at one command every couple of seconds
+ * with nobody watching. If several moves in a row are refused, the walker's picture of
+ * the room is wrong in some way this code does not model -- so stop and say so, rather
+ * than keep sending. A stopped grind costs a few minutes; a spamming one costs the
+ * connection, and the player is the one who has to notice.
+ */
+const MAX_FAILS = 5;
+const REFUSED = /Alas, you cannot go that way\.|There is no exit in that direction\.|You cannot go that way/i;
+
+export function parseGrindOutput(text){
+  if(!run || !run.lastDir) return;
+  if(!REFUSED.test(String(text || ''))) return;
+
+  const here = run.lastFrom || String(currentRoom.uid || currentRoom.name || '?');
+  run.blocked = run.blocked || new Map();
+  if(!run.blocked.has(here)) run.blocked.set(here, new Set());
+  run.blocked.get(here).add(run.lastDir);
+
+  run.fails = (run.fails || 0) + 1;
+  if(run.fails >= MAX_FAILS){
+    say('move refused ' + run.fails + ' times in a row at ' + (currentRoom.name || here)
+        + ' -- stopping rather than walking into a wall.', 'error');
+    stopGrind('exits refused');
+  }
+}
+
 function schedule(ms){
   if(!run) return;
   run.at = Date.now() + Math.max(0, ms - 2000);
@@ -222,6 +265,28 @@ function move(avoidBack){
   // least often from where we are standing is, by definition, the way we have been
   // neglecting.
   const here = String(currentRoom.uid || currentRoom.name || '?');
+  // Arriving somewhere new means the last direction worked -- forget the failures.
+  if(here !== run.lastFrom) run.fails = 0;
+  run.lastFrom = here;
+
+  // Drop exits this room has already refused. GMCP's exit list is not the same thing
+  // as "you may walk that way": the gale rooms above Elemental Canyon advertise east
+  // and answer "Alas, you cannot go that way", and closed doors, flying-only and
+  // level-gated exits all read as ordinary exits too. Without this the walker picked
+  // the same refused direction every time -- its least-used counter only counts moves
+  // it *sent*, so a direction that never succeeds stays the least-used one forever,
+  // and it spammed east into a wall until a human pulled the plug.
+  run.blocked = run.blocked || new Map();
+  const bad = run.blocked.get(here);
+  if(bad && bad.size){
+    const open = choices.filter(d => !bad.has(d));
+    if(open.length) choices = open;
+    else {                              // every exit refused -- walking back is all that is left
+      const out = exits.filter(d => !bad.has(d));
+      choices = out.length ? out : (back ? [back] : exits);
+    }
+  }
+
   run.taken = run.taken || new Map();
   if(!run.taken.has(here)) run.taken.set(here, new Map());
   const used = run.taken.get(here);

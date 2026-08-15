@@ -264,6 +264,31 @@ export function gotoRoomUid(toUid, onDone, opts){
       if(t) xcpAbandonTarget(t, 'lost in random exits');
       return;
     }
+    // LAST RESORT BEFORE GIVING UP: let the SERVER do the pathing.
+    //
+    // Every failure above is a failure of OUR map -- no route recorded, a route that
+    // walks in circles, an area of islands. The game has its own pathfinder that knows
+    // none of those limits, and `hunt` is it. So when the map cannot get there, hand the
+    // job to the MUD rather than writing the target off.
+    //
+    // This is what turned a campaign into a stall. Three targets sat in areas whose maps
+    // wander -- "going in circles in Winding tunnels (4 visits to the same room)" -- and
+    // because a skip is per-target, each retry pass walked the same broken route and
+    // failed the same way. The run spent 5-minute repop rounds re-failing a route that
+    // could never work, then declared "no auto-navigable targets left" with six perfectly
+    // killable mobs outstanding. Retrying a bad route is not a recovery strategy; asking
+    // something that knows the way is.
+    //
+    // Only once per target: if hunt cannot find a trail either, the mob genuinely is not
+    // reachable (not spawned, or behind something no pathfinder crosses) and the target
+    // should end rather than ping-pong between two failing strategies.
+    if(t && !t.huntFallbackTried && !t.isQuest){
+      t.huntFallbackTried = true;
+      appendOutput('[S&D] the map cannot route there -- asking the game to hunt "'
+        + t.mob + '" instead.\n','quest');
+      startAutoHunt(t);
+      return;
+    }
     // Any other unreachable reason ends this target too. It used to print and stop
     // there, leaving pendingXcp set -- so the target stayed "in progress" with
     // nothing running, and an unattended run hung on it indefinitely. Watched live
@@ -1374,7 +1399,21 @@ export function xcpStep(t){
     if(!t.campaignInstance){
       if(!t.whereInstances || t.whereInstances.length===0){
         appendOutput('[S&D] no campaign-hunt candidates found.\n','quest');
-        sndState.pendingXcp=null;
+        // `where` searches the CURRENT AREA only, so nothing found can mean the mob is
+        // not spawned -- or that we are not standing where we think we are. Either way
+        // the server's own hunt is worth one try before the target is written off.
+        if(!t.huntFallbackTried && !t.isQuest){
+          t.huntFallbackTried = true;
+          appendOutput('[S&D] asking the game to hunt "'+t.mob+'" instead.\n','quest');
+          startAutoHunt(t);
+          return;
+        }
+        // Ending the target properly rather than just dropping it. Nulling pendingXcp on
+        // its own left the run with nothing in progress and nothing scheduled, so an
+        // unattended campaign only recovered when the 25s stall watchdog happened to
+        // notice -- once per failed target, for every target, which is most of why a
+        // stalled run looks frozen rather than merely slow.
+        xcpAbandonTarget(t, 'not found in this area');
         return;
       }
       xcpRunCampaignHunt(t);

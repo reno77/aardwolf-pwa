@@ -19,8 +19,10 @@ import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './din
 import { commandMap } from './state.js';
 import { doXq, parseQuestRoomOutput, parseQuestStatusOutput, questInfo } from './quest.js';
 import { noteRoomChars } from './questtag.js';
-import { startGrind, stopGrind } from './grind.js';
+import { openChat } from './chat.js';
+import { parseGrindOutput, startGrind, stopGrind } from './grind.js';
 import { parseMedicOutput, startMedic, stopMedic } from './medic.js';
+import { parseVeilOutput, startVeil } from './veil.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
 import { cleanKeyring, parseKeyringOutput, showKeyring } from './keyring.js';
 import { parseRoomOrdinalOutput } from './roomord.js';
@@ -28,7 +30,7 @@ import { parseScanOutput } from './scan.js';
 import { openTransport } from './transport.js';
 import { setSyncBase, setSyncToken, syncBase, syncMap, syncOnLogin, syncReset,
          syncStatus } from './sync.js';
-import { appendOutput, checkQuest, clearOutput, maxLines, processTriggers, setMaxLines, togglePanel, triggered } from './ui.js';
+import { appendOutput, checkQuest, clearOutput, maxLines, noteDeliberateSleep, processTriggers, setMaxLines, togglePanel, triggered } from './ui.js';
 // --- state owned by this module ---
 export let ws=null;
 export let connected=false;
@@ -55,7 +57,13 @@ export function sendCmd(text){
 }
 export function sendCmdRaw(text){
   if(!ws||!connected){appendOutput('[Offline]\n','error');return;}
+  noteIfSleep(text);
   ws.send(JSON.stringify({cmd:text})); appendOutput('> '+text+'\n','echo');
+}
+
+/** Tell ui.js that a `sleep` was our own, so auto-stand does not undo it. */
+function noteIfSleep(text){
+  if(/^\s*sleep\b/i.test(String(text||''))) noteDeliberateSleep();
 }
 
 // -----------------------------------------------------------------------------
@@ -183,6 +191,20 @@ export function expandAlias(cmd, depth, visited){
   if(depth===undefined) depth=0;
   if(visited===undefined) visited=new Set();
   if(depth>10) return cmd; // safety: max 10 levels deep
+  // A SEQUENCE has to be expanded part by part, and this has to happen BEFORE the
+  // whole-string lookup below. sendCmdSequence hands us an alias BODY --
+  // "hold garbage; enter; rem garbage; wear wpn" -- which is not itself an alias, so
+  // the lookup missed and control fell through to expandArgAlias, which only
+  // understands a bare two-token command and returned the whole string untouched.
+  // That is why `rec` sent a literal `wear wpn` to the MUD and left the character
+  // single-wielding, while the same `wear wpn` typed on its own expanded fine.
+  //
+  // Each part gets its own copy of `visited`: cycle detection is per branch, and a
+  // shared set would silently refuse to expand the second `wear wpn` of a pair.
+  if(cmd.includes(';')){
+    return cmd.split(';').map(p=>p.trim()).filter(Boolean)
+              .map(p=>expandAlias(p, depth+1, new Set(visited))).join(';');
+  }
   const lower=cmd.trim().toLowerCase();
   if(visited.has(lower)) return cmd; // cycle detected
   const seq=commandMap[lower];
@@ -199,17 +221,55 @@ export function expandAlias(cmd, depth, visited){
   return expanded.join(';');
 }
 
+// Timers for the sequence currently in flight, so it can be cut short.
+//
+// An attack alias is a burst -- `attgreen` is five attacks and a poultice -- and the
+// mob usually dies partway through. The rest of the burst then arrives at an empty
+// room and answers "Green death whom?" once per leftover command: a dozen wasted
+// rounds after a fight that is already over, plus a poultice spent on nothing.
+// Cancelling the remainder the moment the MUD says there is no target turns that
+// burst back into "attack until dead, then stop".
+let pendingSeq = [];
+export function abortCmdSequence(why){
+  if(!pendingSeq.length) return;
+  const n = pendingSeq.length;
+  for(const t of pendingSeq) clearTimeout(t);
+  pendingSeq = [];
+  appendOutput('[seq] dropped ' + n + ' queued command(s) -- ' + why + '\n','system');
+}
+
 export function sendCmdSequence(seq){
   const flat=expandAlias(seq);
   const cmds=flat.split(';');
+  abortCmdSequence('superseded');
   let delay=0;
   for(const cmd of cmds){
     const c=cmd.trim();
     if(!c) continue;
-    setTimeout(()=>{ if(ws&&connected){ ws.send(JSON.stringify({cmd:c})); appendOutput('> '+c+'\n','echo'); } }, delay);
+    const timer=setTimeout(()=>{
+      pendingSeq = pendingSeq.filter(x => x !== timer);
+      if(ws&&connected){ noteIfSleep(c); ws.send(JSON.stringify({cmd:c})); appendOutput('> '+c+'\n','echo'); }
+    }, delay);
+    pendingSeq.push(timer);
     delay+=300;
   }
   appendOutput('[Alias] '+cmds[0]+'\n','system');
+}
+
+
+/**
+ * Feed MUD output here: a burst of attacks whose target has died should stop.
+ *
+ * Aardwolf answers a skill with no target by naming the skill -- "Green death whom?",
+ * "Marbu jet whom?" -- or with "They aren't here." One of those means every remaining
+ * command in the current alias burst is going to do the same thing, so drop them.
+ */
+export function parseSequenceAbort(text){
+  if(!pendingSeq.length) return;
+  const s = String(text || '');
+  if(/\bwhom\?/i.test(s) || /They aren'?t here|You do not see (?:them|that)/i.test(s)){
+    abortCmdSequence('no target left');
+  }
 }
 
 /**
@@ -240,9 +300,10 @@ const HELP = [
     { cmds: ['navto'], args: '[uid|room name]', what: 'walk to a room by its game number (exact) or by name; no argument prints the number of the room you are in, which is how you note one for later' },
     { cmds: ['navcoord'], args: '<x>,<y>', what: 'steer to a coordinate -- for continents and other areas the map does not cover, where every room reports its own position' },
     { cmds: ['grind'], args: '<level>', what: 'walk this area killing what your triggers attack, resting when hurt, until that level -- skips any room another player is standing in' },
-    { cmds: ['grindstop'], args: '', what: 'stop the grind' },
-    { cmds: ['medic'], args: '[heal-potion] [mana-potion]', what: 'watch your health during a fight and heal, quaff or drink mana the moment a threshold is crossed -- the gap a human cannot cover' },
+    { cmds: ['grindstop'], args: '', what: 'stop the grind (/grind off works too)' },
+    { cmds: ['medic'], args: '[heal-potion] [mana-potion] [quaff%]  (prefix a pill with eat:)', what: 'watch your health during a fight and heal, quaff or drink mana the moment a threshold is crossed -- the gap a human cannot cover' },
     { cmds: ['medicoff'], args: '', what: 'stop the medic' },
+    { cmds: ['veil'], args: '[command; command...]', what: 'wait for Veil of Stone to be up, then send the command -- physical immunity for the room that kills you on entry' },
     { cmds: ['navdiag'], args: '[room name]', what: 'why can it not path there: client build, this room and its edges, what it has been identified as, and the route to the named room' },
     { cmds: ['map'], args: '', what: 'the full-screen map' },
     { cmds: ['rooms'], args: '', what: 'the rooms panel; tap one to walk there' },
@@ -254,6 +315,7 @@ const HELP = [
     { cmds: ['cpcheck', 'ccheck'], args: '', what: 'read cp check and rebuild the target list' },
     { cmds: ['cpinfo', 'cinfo'], args: '', what: 'read cp info' },
     { cmds: ['campaign'], args: '', what: 'the campaign panel' },
+    { cmds: ['chat'], args: '[clan|tell|group|say]', what: 'the chat panel -- clan, tells, group and public talk kept out of the combat scroll' },
     { cmds: ['keyclean'], args: '', what: 'drop the duplicate items off your keyring, keeping one of each' },
     { cmds: ['keyring'], args: '', what: 'list the keys on your keyring -- the game checks it when unlocking, so a key here means no errand' },
     { cmds: ['cpnew'], args: '[auto]', what: 'walk to a quest master, take a campaign, and with "auto" start working through it' },
@@ -358,6 +420,7 @@ export function submitCmd(){
     if(cmd==='export'){ exportDb(); return; }
     if(cmd==='import'){ importDb(); return; }
     if(cmd==='campaign'){ togglePanel('campaign'); return; }
+    if(cmd==='chat'){ openChat(parts[1]||''); togglePanel('chat'); return; }
     if(cmd==='cpinfo' || cmd==='cinfo'){ doCpInfo(); return; }
     if(cmd==='cpcheck' || cmd==='ccheck'){ doCpCheck(); return; }
     if(cmd==='xcp'){
@@ -385,6 +448,7 @@ export function submitCmd(){
     if(cmd==='grind'){ startGrind(parts.slice(1).join(' ')); return; }
     if(cmd==='medic'){ startMedic(parts.slice(1).join(' ')); return; }
     if(cmd==='medicoff'){ stopMedic('asked to stop'); return; }
+    if(cmd==='veil'){ startVeil(parts.slice(1).join(' ')); return; }
     if(cmd==='grindstop'){ stopGrind('asked to stop'); return; }
     // The whole argument, not parts[1]: a room name has spaces in it, and
     // `/navto Inside the Kitchen` used to search for a room called "Inside".
@@ -556,6 +620,9 @@ export function handleMessage(msg){
       parseKeyMobOutput(msg.text);     // ...or off the mob that was carrying it
       noteRoomChars(msg.text);         // who is standing here, for the door-guard case
       parseMedicOutput(msg.text);     // a healing potion just ran out
+      parseVeilOutput(msg.text);      // is the veil of stone up yet
+      parseSequenceAbort(msg.text);   // target died mid-burst: drop the rest of the alias
+      parseGrindOutput(msg.text);     // that exit was refused: stop choosing it
       parseQuestRoomOutput(msg.text);  // which copy here wears the [Quest] tag
       parseQuestStatusOutput(msg.text); // may we have a quest, and did we get one
       parseEntryItemOutput(msg.text);  // readying a held portal such as the amulet

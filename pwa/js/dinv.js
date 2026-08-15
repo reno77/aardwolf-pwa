@@ -536,9 +536,15 @@ export function searchItems(query, opts){
   }
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const where = terms.map(()=>'LOWER(name) LIKE ?').join(' AND ');
+  // `containersOnly` matters when the query is going to be used as a PLACE to put
+  // things. "aardwolf" matches both a Bag of Aardwolf and a Dagger of Aardwolf, and
+  // the MUD picks by its own ordering -- `put all aardwolf` answered "The Dagger of
+  // Aardwolf is not a container." and the transfer stalled. Binding to a dagger would
+  // fail the same way later, quietly, one item at a time.
+  const typeClause = (opts && opts.containersOnly) ? ' AND type=11' : '';
   return rowsToItems(sqlDb.exec(
     `SELECT objectid,name,level,type,location,flags FROM items
-      WHERE ${where} ORDER BY level DESC, name LIMIT ?`,
+      WHERE ${where}${typeClause} ORDER BY level DESC, name LIMIT ?`,
     [...terms.map(t=>'%'+t+'%'), limit]));
 }
 
@@ -582,11 +588,32 @@ export function getBindings(){
 }
 function setBindings(b){ localStorage.setItem('dinv_bindings', JSON.stringify(b)); }
 
+/** Every band a stored item can be filed into, plus the catch-all. NOT the wear
+ *  slots -- ALL_SLOTS above is those, and the two must not share a name. */
+const BIND_SLOTS = ['1','2','3','4','5','misc'];
+
 export function bindContainer(slot, query){
   slot = String(slot || '').toLowerCase();
-  const valid = ['1','2','3','4','5','misc'];
-  if(!valid.includes(slot)){
-    appendOutput('[dinv] slot must be one of ' + valid.join(', ') + '\n','error');
+
+  // `dinv bind all <container>` -- one container for everything.
+  //
+  // The five-backpack layout exists because five [Recruit] Leather Backpacks were the
+  // storage on hand, and splitting by level band was the only way to fit. A single
+  // Bag of Aardwolf holds 5,020 (against a backpack's 1,500), stores its contents at
+  // 20% weight, and weighs -452 itself, so the bands stop earning their keep: one bag
+  // is lighter, roomier and simpler than five. Pointing every slot at it keeps all the
+  // banding machinery working unchanged -- sort, swap and bind all still file by slot,
+  // they just happen to file to the same place.
+  if(slot === 'all'){
+    const q = String(query || '').trim();
+    if(!q){ appendOutput('[dinv] usage: dinv bind all <container>\n','error'); return; }
+    for(const s of BIND_SLOTS) bindContainer(s, q);
+    appendOutput('[dinv] every slot now files into the same container\n','system');
+    return;
+  }
+
+  if(!BIND_SLOTS.includes(slot)){
+    appendOutput('[dinv] slot must be one of ' + ALL_SLOTS.join(', ') + ', or "all"\n','error');
     return;
   }
   const q = String(query || '').trim();
@@ -617,8 +644,15 @@ export function bindContainer(slot, query){
     target = hit.objectid;
     label = `${hit.name}  (was ${q} at bind time)`;
   } else {
-    const hit = searchItems(q, {limit:1})[0];
-    if(!hit){ appendOutput('[dinv] no container matches "'+q+'" -- try an object id or 2.backpack\n','error'); return; }
+    // Containers only. A name that also matches a weapon must never bind a slot to
+    // something nothing can be put into: "aardwolf" matches both a Bag of Aardwolf and
+    // a Dagger of Aardwolf, and picking the dagger fails one item at a time, quietly.
+    const hit = searchItems(q, {limit:1, containersOnly:true})[0];
+    if(!hit){
+      appendOutput('[dinv] no CONTAINER matches "'+q+'" -- try an object id or 2.backpack.'
+        + ' Names that also match a weapon (e.g. "aardwolf") are ignored here.\n','error');
+      return;
+    }
     target = hit.objectid;
     label = hit.name;
   }
@@ -659,6 +693,26 @@ export function autoBind(opts){
   // A gem/misc bag is identifiable by name, unlike the backpacks.
   const miscAt = boxes.findIndex(c => /\b(gem|gems|misc|junk|pouch|satchel)\b/i.test(c.name));
   const misc = miscAt >= 0 ? boxes.splice(miscAt, 1)[0] : null;
+
+  // One big bag beats five small ones, so prefer it outright.
+  //
+  // A Bag of Aardwolf holds 5,020 where a [Recruit] Leather Backpack holds 1,500, keeps
+  // its contents at 20% weight and weighs -452 itself. Once one is carried there is no
+  // reason to spread gear across level bands at all -- so bind every band to it and
+  // leave the packs empty. Recognised by name because the invdata feed does not report
+  // container capacity; if that ever changes, prefer the largest instead.
+  const big = boxes.find(c => /bag of aardwolf/i.test(c.name));
+  if(big && (force || BIND_SLOTS.every(s => !b[s] || b[s] === big.objectid))){
+    for(const s of DEFAULT_BANDS.map(x => x.slot)) b[s] = big.objectid;
+    if(!b.misc || force) b.misc = misc ? misc.objectid : big.objectid;
+    setBindings(b);
+    if(!quiet){
+      appendOutput(`[dinv] one container for everything: ${big.name} [${big.objectid}]\n`,'system');
+      if(misc) appendOutput(`    misc still goes to ${misc.name} [${misc.objectid}]\n`,'system');
+      appendOutput('[dinv] split it back up with "dinv bind <slot> <container>"\n','system');
+    }
+    return b;
+  }
 
   const picked = [];
   const bands = DEFAULT_BANDS.map(x => x.slot);
@@ -887,6 +941,7 @@ const HELP = [
   'dinv best                 best loadout per slot, ranked by the game score',
   'dinv swap                 wear every upgrade and stow what comes off',
   'dinv bind <slot> <cont>   bind slot; id, name, or 2.backpack (resolved to an id)',
+  'dinv bind all <cont>      one container for everything (e.g. a Bag of Aardwolf)',
   'dinv autobind [force]     pick containers automatically, in inventory order',
   'dinv bindings             show which container each band files into',
   'dinv bands                show the level bands',

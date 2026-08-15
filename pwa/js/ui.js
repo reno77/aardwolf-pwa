@@ -1,5 +1,6 @@
 // ui.js -- extracted from index.html
 
+import { noteChatLine, renderChat, totalUnread } from './chat.js';
 import { fadoTriggers, persistDb, persistDbNow, replaceDb, sqlDb } from './db.js';
 import { renderRooms } from './nav.js';
 import { connected, sendCmd, showLogin, ws } from './net.js';
@@ -23,6 +24,11 @@ function emitLine(line, cls){
   div.innerHTML=ansiToHtml(line);
   output.appendChild(div);
   if(++lineCount>maxLines){output.removeChild(output.firstChild);lineCount--;}
+  // Copy conversation into the chat panel on the way past. This is the one place every
+  // line goes through, and doing it here means the panel cannot miss a line that the
+  // main window showed. Only MUD output is offered -- client messages carry a `cls`
+  // and are ours, not somebody talking.
+  if(!cls) noteChatLine(line);
 }
 
 // MUD output arrives in arbitrary TCP-sized chunks, so a single line is often
@@ -131,6 +137,19 @@ export function stripAnsi(t){return t.replace(/\x1b\[[0-9;]*m/g,'');}
 // =============================================================================
 // TRIGGERS
 // =============================================================================
+// `sleep` is the fastest regeneration Aardwolf has, and the built-in `auto-stand`
+// trigger made it unusable: it fires on "You go to sleep" and answers `stand`, so a
+// deliberate sleep ended the same tick it began. grind.js works around this by using
+// `rest` instead and says so in a comment -- but resting is markedly slower, and in
+// the Gladiator's Arena gauntlet, where nothing else restores mana, that difference
+// is the run.
+//
+// auto-stand is still worth having for a sleep the player did NOT ask for (a mob's
+// sleep spell), so rather than delete it, ignore the message when we just sent the
+// command ourselves.
+let sleptDeliberatelyAt = 0;
+export function noteDeliberateSleep(){ sleptDeliberatelyAt = Date.now(); }
+
 export function processTriggers(text){
   if(!triggersEnabled) return;
   const cleanText=stripAnsi(text);
@@ -139,6 +158,8 @@ export function processTriggers(text){
     if(!t.enabled) continue;
     if(t.once&&triggered.has(t.name)) continue;
     if(t.p.test(cleanText)){
+      // Our own sleep: leave the character asleep, that was the point.
+      if(t.name==='auto-stand' && Date.now()-sleptDeliberatelyAt < 10000) continue;
       triggered.add(t.name);
       // Special handling for login triggers
       if(t.cmd==='auto_name'){
@@ -179,10 +200,33 @@ export function processTriggers(text){
   for(const t of fadoTriggers){
     if(!t.enabled) continue;
     if(t.p.test(cleanText)){
+      if(triggerOnCooldown(t.name)) continue;
       sendCmd(t.cmd);
       appendOutput('[Trig] '+t.name+': '+t.cmd+'\n','trigger');
     }
   }
+}
+
+// One firing per trigger per COOLDOWN_MS, however many lines match.
+//
+// The attack triggers match a MOB'S DESCRIPTION LINE, and a room lists one line per
+// mob -- so walking into a room with four flames in it fired `attgreen` four times,
+// and that alias is five attacks plus a poultice. Twenty attack commands went into the
+// buffer for a fight that needed a handful, and the surplus arrived after everything
+// was already dead, answering "Green death whom?" over and over.
+//
+// It is not just noise: every queued command is a round the character spends not doing
+// something useful, and in a room that matters those rounds are the fight. One firing
+// is enough -- the alias already repeats internally, and the trigger fires again on the
+// next round's output if the fight is still going.
+const TRIGGER_COOLDOWN_MS = 4000;
+const lastTriggerFire = new Map();
+function triggerOnCooldown(name){
+  const now = Date.now();
+  const last = lastTriggerFire.get(name) || 0;
+  if(now - last < TRIGGER_COOLDOWN_MS) return true;
+  lastTriggerFire.set(name, now);
+  return false;
 }
 
 export function checkQuest(text){
@@ -374,7 +418,7 @@ export function deleteTriggerEdit(){
 // =============================================================================
 export function togglePanel(name){
   const panels=['rooms','aliases','triggers','campaign'];   // the swipe cycle
-  const all=[...panels,'settings','inventory'];
+  const all=[...panels,'settings','inventory','chat'];
   const idx=panels.indexOf(name);
   if(idx>=0) swipePanelState=idx;   // settings/inventory are outside the cycle
   // Hide every panel, not just the swipeable ones -- inventory was absent from
@@ -385,12 +429,28 @@ export function togglePanel(name){
   if(name==='aliases') renderAliases();
   if(name==='triggers') renderTriggers();
   if(name==='campaign') renderCampaign();
+  if(name==='chat'){ renderChat(); updateChatBadge(); }
   if(name==='settings'){
     document.getElementById('set-buffer').value=maxLines;
     document.getElementById('db-info').textContent=sqlDb?'Ready':'Not loaded';
   }
 }
 export function hidePanel(name){ document.getElementById('panel-'+name).classList.remove('show'); }
+
+/**
+ * Show the unread count on the chat button itself.
+ *
+ * The panel is only useful if you know to open it, and the reason a tell gets missed is
+ * that nothing indicated it arrived. The count goes on the toolbar button so it is
+ * visible while fighting, which is exactly when the main window is unreadable.
+ */
+export function updateChatBadge(){
+  const btn = document.getElementById('chat-btn');
+  if(!btn) return;
+  const n = totalUnread();
+  btn.textContent = n ? '💬' + (n > 99 ? '99+' : n) : '💬';
+  btn.classList.toggle('has-unread', n > 0);
+}
 
 export function saveBufferSetting(){
   const val=parseInt(document.getElementById('set-buffer').value)||200;
