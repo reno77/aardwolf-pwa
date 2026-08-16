@@ -117,6 +117,21 @@ still the way out of a no-portal room, but reaching Aylor afterwards needs the g
 portal. And `runto` needs the recall ROOM, not merely Aylor: standing at the questmaster,
 `runto <area>` silently does nothing at all.
 
+**For a puzzle the local DB cannot explain, read the WEB map.** `maps.gaardian.com/index.php?areaid=<id>`
+carries hover notes that `gaardian_maps.db` does not store, and they are the difference
+between a solved area and a dead end. The DB told me The Empire of Talsa needed
+`give vegetable Sarah` -- the WHAT -- and nothing about the HOW, so I wrote the area off
+as an unsolved fetch chain. The web note said it outright: *kill a farmer, wear conadrain
+clothes, be visible, then give*. All five Talsa gates are documented the same way.
+
+**Take the ACCESSIBILITY SNAPSHOT, not a screenshot.** Playwright's `browser_snapshot`
+returns every room name and hover note as searchable text; a screenshot of a map this
+size needs several scrolled captures and then has to be read off pixels. Use
+`browser_navigate` then `browser_snapshot` -- the area id is not the same as the DB
+areaid (Talsa is 119 on the site).
+
+So: **DB for routing, web map for puzzle hints.**
+
 **Try `pick <direction>` on a locked door before anything else.** The character can pick
 locks, and it opened every locked door in The Monastery in one command each — after I had
 spent an hour treating a key-holder's respawn as a hard prerequisite. A locked door is a
