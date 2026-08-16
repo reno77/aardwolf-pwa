@@ -30,6 +30,7 @@ const POST_ROW  = /^\|\s*(\d+)\|\s*([^|]{6,20}?)\s*\|\s*(\*?)([^|]*?)\s*\|\s*([^
 export let boards = [];        // [{num, name, unread, desc}]
 export let posts  = [];        // [{num, when, unread, author, subject, size}]
 export let currentBoard = '';
+let awaitingList = false;   // true between `note list` and its final row
 export let openNote = null;    // {num, from, forum, to, date, body[]}
 
 let onChange = null;
@@ -55,6 +56,16 @@ function boardLine(text){
   for(const raw of clean.split(/\r?\n/)){
     const line = raw.replace(/\s+$/, '');
 
+    // Aardwolf pages long output and WAITS: "[ (Q)uit, (B)ack, (R)efresh, (L)ast, (A)ll ]".
+    // Everything typed while that prompt is up is eaten by the pager, so a `note list` on
+    // a busy forum silently swallowed the next few commands and left the session wedged
+    // in a prompt -- a quest request and a campaign request went into it and vanished.
+    // Answer it with (A)ll, but ONLY while we are the ones waiting on a listing, so this
+    // never hijacks a pager the player opened themselves.
+    if(awaitingList && /\(Q\)uit.*\(A\)ll/i.test(line)){
+      sendCmdRaw('a');
+      return touched;
+    }
     const b = line.match(BOARD_ROW);
     if(b && !/^Forum$/i.test(b[2])){
       const num = parseInt(b[1], 10);
@@ -88,6 +99,7 @@ function boardLine(text){
     }
   }
 
+  if(/^\[\d+\/\d+hp/.test(clean)) awaitingList = false;
   if(parseNoteBody(clean)) touched = true;
   if(touched){ posts.sort((a,b)=>a.num-b.num); boards.sort((a,b)=>a.num-b.num); changed(); }
 }
@@ -137,6 +149,7 @@ export function openBoard(name){
   posts = [];
   currentBoard = name;
   sendCmdRaw('board ' + name);
+  awaitingList = true;
   setTimeout(()=>sendCmdRaw('note list'), 700);
 }
 
