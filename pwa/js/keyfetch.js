@@ -555,6 +555,7 @@ export function tryGetKeyThen(t, gate, resume){
         tryGetKeyThen(t, gate, resume);
       });
   }
+  if(tryGiveKeyThen(t, gate, resume)) return true;
   if(src && src.kind === 'container'){
     if(fetchKeyFromContainer(t, gate, resume)) return true;
   }
@@ -575,6 +576,84 @@ export function tryGetKeyThen(t, gate, resume){
  * Deliberately narrow: it buys only the item the map named, only from the room
  * the map named, and only once per gate per session.
  */
+/**
+ * The map's note is an INSTRUCTION, not prose: "give pick wounded".
+ *
+ * Some keys are not bought, looted or stolen -- they are handed over by a mob in
+ * exchange for something. Gaardian writes that as a bare command in `key_desc`, and
+ * because nothing parsed that shape the note was printed and then ignored, which left
+ * the walker stuck at a door whose answer was already on disk.
+ *
+ * The Scarred Lands is the case: the way up to A rough trail is locked, the key is a
+ * powder keg, and the note says `give pick wounded` -- hand a pick to the wounded miner
+ * and he gives you the keg. There is a second one in the same area (`give head pete`),
+ * so this is a pattern in the data rather than a one-off.
+ *
+ * What this does NOT do is solve the chain. If the pick itself has to be obtained by
+ * giving something to somebody else, that is another gate with its own note, and
+ * following it blindly would have the walker wandering an area swapping items. So: do
+ * the exchange when the item is already carried, and when it is not, say exactly what
+ * is missing and to whom it goes. A precise "you need a pick for the wounded miner"
+ * is worth more than an automated guess.
+ */
+const GIVE_NOTE = /(?:^|[>\s])give\s+([a-z][a-z' -]{0,24}?)\s+([a-z][a-z' -]{0,24}?)\s*(?:$|<|\.)/i;
+
+function tryGiveKeyThen(t, gate, resume){
+  if(!gate || !gate.keyDesc) return false;
+  const m = stripAnsi(String(gate.keyDesc)).match(GIVE_NOTE);
+  if(!m) return false;
+  const tag = gate.fromUid + '|' + gate.dir + '|give';
+  if(boughtKeys.has(tag)) return false;          // one attempt per gate per session
+  boughtKeys.add(tag);
+
+  const item = m[1].trim(), who = m[2].trim();
+  appendOutput('[S&D] the map says this door opens by "give ' + item + ' ' + who + '"'
+    + (gate.keyName ? ' (for ' + gate.keyName + ')' : '') + '.\n','quest');
+
+  sndState.pendingKeyGive = {t, gate, resume, item, who, ts: Date.now()};
+  // Try it where we stand first: these exchange mobs are often beside their own door,
+  // and a `give` that answers "You do not have that item" is the cheapest possible way
+  // to find out the chain is not finished.
+  sendCmdRaw('give ' + item + ' ' + who);
+  return true;
+}
+
+/**
+ * Read the reply to that `give`. Returns true if the text was consumed.
+ *
+ * Three outcomes matter and they are told apart by the game's own words: the item is
+ * not carried, the mob is not here, or it worked -- and only the last one should send
+ * the walker back at the door.
+ */
+export function parseKeyGiveOutput(text){
+  const g = sndState.pendingKeyGive;
+  if(!g) return false;
+  const s = stripAnsi(String(text || ''));
+
+  if(/you do not have that item|you don'?t have that/i.test(s)){
+    sndState.pendingKeyGive = null;
+    appendOutput('[S&D] that door needs "' + g.item + '" given to ' + g.who
+      + ', and you are not carrying a ' + g.item + '. Get one and /xcp again.\n','error');
+    return true;
+  }
+  if(/(?:they|he|she) (?:aren'?t|isn'?t) here|you do not see (?:them|that)/i.test(s)){
+    sndState.pendingKeyGive = null;
+    appendOutput('[S&D] ' + g.who + ' is not in this room -- `where ' + g.who
+      + '` to find them, then /xcp again.\n','error');
+    return true;
+  }
+  // "You give a pick to a wounded miner." / "... gives you a powder keg."
+  if(/\byou give\b/i.test(s) || /gives you\b/i.test(s)){
+    sndState.pendingKeyGive = null;
+    appendOutput('[S&D] handed over -- trying the door again.\n','quest');
+    clearGateInfo();
+    const resume = g.resume;
+    if(typeof resume === 'function') setTimeout(resume, 1200);
+    return true;
+  }
+  return false;
+}
+
 function tryBuyKeyThen(t, gate, resume){
   if(!gate || !gate.keyName || !gate.keyRoom) return false;
   const tag = gate.fromUid + '|' + gate.dir;

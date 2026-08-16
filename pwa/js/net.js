@@ -12,7 +12,7 @@ import { doCpCheck, doCpInfo, doHuntTrick, doQuickWhere, parseHuntOutput, parseW
          setXcpMode, requestCampaign, setQuestmasterRoom, questmasterRoom,
          sndState, xcpByIndex, xcpNext, DEFAULT_RECALL } from './snd.js';
 import { setAutoRun } from './autorun.js';
-import { parseKeyFetchOutput, parseKeyMobOutput } from './keyfetch.js';
+import { parseKeyFetchOutput, parseKeyGiveOutput, parseKeyMobOutput } from './keyfetch.js';
 import { parseEntryItemOutput } from './pools.js';
 import { harvestAreaKeywords, parseAreasOutput } from './areas.js';
 import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './dinv.js';
@@ -617,6 +617,7 @@ export function handleMessage(msg){
       parseIdentifyOutput(msg.text);   // which copy cannot be hunted
       parseWhereOrdOutput(msg.text);   // and where that copy is
       parseKeyFetchOutput(msg.text);   // did the key actually come out of the box
+      parseKeyGiveOutput(msg.text);    // did the exchange the map described go through
       parseKeyMobOutput(msg.text);     // ...or off the mob that was carrying it
       noteRoomChars(msg.text);         // who is standing here, for the door-guard case
       parseMedicOutput(msg.text);     // a healing potion just ran out

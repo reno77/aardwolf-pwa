@@ -1724,6 +1724,18 @@ export function parseWhereOrdOutput(text){
     appendOutput('[S&D] where could not place '+st.ordKw+'; falling back to the room list.\n','quest');
     return;                        // the ordinary where-enumeration flow continues
   }
+  // What we asked about: `where 3.ghoul` -> "ghoul". Every row a `where` reply prints
+  // names a mob matching that keyword, so a line whose first column does NOT contain it
+  // is not part of the reply at all.
+  //
+  // This is the check that was missing, and without it the enumeration could not
+  // finish. Aardwolf interleaves channel traffic with command output, and the rows
+  // it produces have the same two-column shape a `where` row does, so the parser
+  // accepted the first thing to arrive: "that is \"WARFARE: Type 'combat' to join\",
+  // not \"a tied up ghoul\" -- trying where 4.ghoul", then the same for an INFO line,
+  // then a bare "---". It walked the whole ordinal list matching gossip and never once
+  // looked at the real answer, which was sitting in the same buffer.
+  const bareKw = String(st.ordKw || '').replace(/^\d+\./, '').toLowerCase();
   for(const line of clean.split(/\r?\n/)){
     const m = line.match(WHERE_ROW);
     if(!m) continue;
@@ -1731,6 +1743,10 @@ export function parseWhereOrdOutput(text){
     // so reject anything whose first column looks like a prompt and anything whose
     // second is too short to be a room name.
     if(/^\[/.test(m[1].trim())) continue;
+    const who = m[1].trim();
+    if(bareKw && !who.toLowerCase().includes(bareKw)) continue;
+    // Channel and info traffic, which is never a `where` row however it is shaped.
+    if(/^(?:WARFARE|INFO|Auction|Market|Global Quest|CLAN|\*\*|##|-{2,})\b/i.test(who)) continue;
     const room = m[2].trim();
     if(room.length < 3 || !/[a-z]/i.test(room)) continue;
     sndState.pendingWhereOrd = null;
@@ -2370,7 +2386,20 @@ export function parseWhereOutput(text){
     } else {
       // A different mob sharing the keyword. `where` answers with only one mob,
       // so the next ordinal is the only way past it.
-      wrongName.push(mobCol.trim());
+      //
+      // ...but only if it IS a mob. Aardwolf interleaves channel traffic with command
+      // output, and a gossip or an INFO line has the same two-column shape as a `where`
+      // row, so they were counted as "wrong mob" and burned an ordinal each. Watched
+      // live hunting a tied up ghoul: the enumeration reported "that is WARFARE: Type
+      // 'combat' to join, not a tied up ghoul", then an INFO line, then "---", then
+      // "You see the black moon rise in" -- four ordinals spent on weather and channel
+      // spam, and the real row never got looked at.
+      //
+      // A `where <kw>` row always names a mob matching that keyword, so requiring the
+      // keyword is the check that separates a real row from everything else.
+      const kwNow = String(activeWhereKw(t) || '').replace(/^\d+\./,'').toLowerCase();
+      const isSpam = /^(?:WARFARE|INFO|Auction|Market|Global Quest|CLAN|Lasertag|You see the|-{2,}|\*{2,}|##)\b/i.test(mobCol.trim());
+      if(!isSpam && (!kwNow || mobLower.includes(kwNow))) wrongName.push(mobCol.trim());
     }
   }
 

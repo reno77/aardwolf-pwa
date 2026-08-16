@@ -888,6 +888,14 @@ const BLOCKED = [
   {re:/^You are regaining balance/im,               msg:null, retry:true},
   {re:/^You fumble about drunkenly/im,              msg:null, retry:true},
   {re:/^Magic walls bounce you back/im,             msg:'blocked by magic walls', noportal:true},
+  // "Magical wards around the pile bounce you back." -- NOT the same message as
+  // "Magic walls bounce you back", and it does not mean the room is noportal. It is
+  // what a LOCKED door answers when you walk into it after `open` has already failed
+  // with "You do not have a key for the pile", and it names the door rather than the
+  // room. Without this line it matched nothing, so a locked exit in The Scarred Lands
+  // read as an unexplained timeout instead of "you need the key" -- and the note the
+  // map holds about how to get that key was never printed.
+  {re:/^Magical wards around .* bounce you back/im,  msg:'that door is locked', locked:true},
   // A guard mob standing in the way. The exit exists and is open -- you are just
   // not allowed through it -- so the move produces speech and no room change,
   // which used to look like a timeout. Confirmed live at the Keep of the
