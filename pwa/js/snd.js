@@ -2112,6 +2112,20 @@ export function parseAutoHuntOutput(text){
   const clean=stripAnsi(text);
   if(ah.timer){ clearTimeout(ah.timer); ah.timer=null; }
 
+  // The step we just took bounced off a shut door. The check below -- "GMCP omits it, so
+  // it must be closed" -- cannot catch this one, because room.info lists closed doors like
+  // any other exit, so the direction looked perfectly open and the move was sent bare.
+  // The refusal is the only evidence there is a door there, and without acting on it the
+  // hunt sat until the 5s timer and reported "no usable hunt direction", which describes
+  // neither the cause nor the cure. Confirmed in the Ruins of Diamond Reach: hunting the
+  // Baron through the town's south gate answered "The gate is closed." and stopped dead.
+  if(ah.lastDir && !ah.opened && /\b(?:is|are) closed\b/i.test(clean)){
+    ah.opened = true;                       // one attempt, so a stuck door cannot loop
+    appendOutput('[ah] '+ah.lastDir+' is closed; opening it\n','system');
+    sendCmdRaw('open '+ah.lastDir);
+    ah.timer=setTimeout(huntStep, 800);
+    return true;
+  }
   if(HUNT_FAIL.test(clean)){ stopAutoHunt('hunt cannot find the target'); return true; }
   if(HUNT_THROUGH.test(clean)){
     stopAutoHunt('target is through a portal -- enter it manually, then /xcp again');

@@ -979,6 +979,15 @@ const BLOCKED = [
   {re:/refuses to let you pass/im,                  msg:'a guard will not let you through', gated:true},
   {re:/\byou are not allowed\b/im,                  msg:'not allowed through there',        gated:true},
   {re:/\byou cannot enter\b/im,                     msg:'you cannot enter there',           gated:true},
+  // A mob standing in the way that can simply be killed. Unlike the guards above, this is
+  // NOT a property of the exit -- the way is open, something living is in front of it --
+  // so the edge must not be parked at 999 and routed around. The mine entrance in the
+  // Ruins of Diamond Reach has one way in and a lich on it: "The lich doesn't seem to
+  // agree with your intent to enter the mine." Parking that edge strands the area, and
+  // reporting nothing made every campaign target inside it fail as `movement timed out`,
+  // which reads as a dead client rather than one mob to kill.
+  {re:/^(?:The |A |An )?([A-Za-z][\w' -]{0,28}?) does(?:n'|n)?t seem to agree with your intent/im,
+                                                    msg:null, blocker:true},
   {re:/^You cannot (recall|return home) from this room/im, msg:'cannot recall here', norecall:true},
   // The reply to a prerequisite we cannot perform: `give 'identification pass'
   // 'castle guard'` when the pass is not in inventory. Treated as a plain move
@@ -1185,6 +1194,30 @@ export function onMudText(text){
     // already walked and reachable the long way round. reportKeyFor above has already
     // recorded the gate, so the key machinery still gets its turn if there is no way
     // round at all.
+    // Something alive is standing in the way. Kill it and take the step again, rather
+    // than parking the edge: the exit is fine, and this is the only way into the area.
+    // The walk pauses itself while fighting (charState) and onCharStateChange calls
+    // step() again once the fight is over, so there is nothing to schedule here beyond
+    // clearing the expectation that the move already succeeded.
+    if(b.blocker && walk.lastDir){
+      const who = (b.re.exec(text) || [])[1];
+      const kw = itemKw(who);
+      if(kw && !walk.killTried) walk.killTried = new Set();
+      const tag = String(walk.lastFrom) + '|' + walk.lastDir + '|' + kw;
+      if(kw && !walk.killTried.has(tag)){
+        walk.killTried.add(tag);
+        appendOutput('[nav] ' + who + ' is blocking ' + walk.lastDir + '; killing it\n','system');
+        unspendLastStep();            // the step never happened -- put it back on the plan
+        walk.expectUid = null;
+        sendCmdRaw('kill ' + kw);
+        clearStepTimer();
+        walk.timer = setTimeout(step, 2500);
+        return;
+      }
+      finish(false, (who || 'something') + ' is blocking ' + walk.lastDir
+        + ' and killing it did not clear the way');
+      return;
+    }
     if((b.gated || b.locked) && walk.lastFrom && walk.lastDir){
       try {
         sqlDb.run('UPDATE exits SET level=999 WHERE from_uid=? AND dir=?', [walk.lastFrom, walk.lastDir]);
