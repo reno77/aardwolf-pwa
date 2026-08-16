@@ -1519,15 +1519,36 @@ function resolveNavName(name){
       + '      have not imported -- walk in once, or /xq if it is a quest target.\n','error');
     return null;
   }
+  // Prefer THIS AREA. Room names repeat constantly across Aardwolf -- "A cavern"
+  // exists in a dozen areas, and Halls of the Damned alone has twelve of them -- and
+  // somebody typing a room name almost always means the one they are standing near.
+  //
+  // Reachability alone was not enough to express that. When exactly one match had a
+  // route, it was taken silently however far away it was: `/goto A cavern`, typed
+  // inside Halls of the Damned, walked to a cavern in a different area entirely and
+  // reported "Arrived at A cavern" -- correct by its own reckoning, and useless.
+  // Filtering to the current area first makes the common case unambiguous, and leaves
+  // the old behaviour intact for a name that genuinely is not local.
+  const here = String(currentRoom.area || '').toLowerCase();
+  const sameArea = here ? rows.filter(([,,a]) => String(a || '').toLowerCase() === here) : [];
+  const pool = sameArea.length ? sameArea : rows;
+
   // Prefer somewhere we can actually get to: an unreachable exact match is worse
   // than a reachable one when the name repeats across areas.
-  const reachable = rows.filter(([u]) => u !== currentRoom.uid && findPath(currentRoom.uid, u));
+  const reachable = pool.filter(([u]) => u !== currentRoom.uid && findPath(currentRoom.uid, u));
   const pick = reachable.length === 1 ? reachable
-             : (rows.length === 1 ? rows : null);
+             : (pool.length === 1 ? pool : null);
   if(!pick){
-    const list = (reachable.length ? reachable : rows).slice(0, 12);
-    appendOutput('[nav] "'+name+'" matches '+rows.length+' room(s)'
-      + (reachable.length && reachable.length !== rows.length
+    const list = (reachable.length ? reachable : pool).slice(0, 12);
+    if(sameArea.length > 1){
+      appendOutput('[nav] '+sameArea.length+' rooms called "'+name+'" in '
+        + (currentRoom.area || 'this area')+' alone.\n','system');
+    }
+    // Count what is actually being offered. Reporting rows.length while listing only
+    // the local ones reads as a bug ("matches 14 rooms" above a list of three).
+    appendOutput('[nav] "'+name+'" matches '+pool.length+' room(s)'
+      + (pool.length !== rows.length ? ' here (' + rows.length + ' in the whole map)' : '')
+      + (reachable.length && reachable.length !== pool.length
           ? ', '+reachable.length+' of them reachable' : '')
       + ' -- /navto <uid> to choose:\n','system');
     for(const [u, n, a] of list){
