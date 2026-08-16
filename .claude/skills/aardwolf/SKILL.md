@@ -182,6 +182,15 @@ weapons. `remove amethyst` twice and punch: 100% to dead on the first attempt. R
 **Hidden mobs cannot be killed.** `(Hidden)` in `scan` means `kill` answers "They aren't
 here" from inside the room. `cast 'detect hidden'` — spellup's copy lapses.
 
+**`scan` first — it beats `where` for anything that moves.** `where` returns a ROOM NAME,
+and dozens of rooms share one (Anthrox has five "The Military Training Grounds", Halls of
+the Damned twelve "A cavern"); worse, the name can be stale for a mob that has walked next
+door. `scan` sees three rooms in every direction and names what is actually there. The
+huge winged dragon cost five route-sweeps and a dozen probes; `scan` found it one room
+south in one command. Use `where` for the AREA, travel, then `scan` for the ROOM — and
+reach for `scan` immediately when `kill` says "They aren't here" somewhere `where` just
+named.
+
 **Duplicated + wandering mobs: re-enumerate, do not re-reason.** Several mobs can share a
 name (the Scarred Lands has many "a black dragon"), they drift between rooms and repop
 fast. `hunt <kw>` answering "unable to hunt" means no HUNTABLE one is in range -- NOT that
