@@ -351,6 +351,35 @@ export async function loadGaardianDb() {
 
 export function gaardianUid(areaid, localId){ return `gaardian:${areaid}:${localId}`; }
 
+/**
+ * Throw away what we have learned about an area and import it from the map again.
+ *
+ * The local copy of an area degrades: every refused move parks an edge, every wrong guess
+ * about which of several identically-named rooms we are in parks a few more, and in a
+ * place like Xyl's Mosaic -- 100 rooms, 17 of them called "Rubber Garden", every GMCP exit
+ * reporting -1 so nothing can be re-learned by walking -- that is a one-way trip. The
+ * Gaardian data it all came from is still on disk and still correct, so the repair is to
+ * take it again.
+ *
+ * Live rooms are left alone; only the imported skeleton and the import marker go.
+ */
+export function remapArea(areaName){
+  if(!sqlDb || !gaardianDb) return 0;
+  const name = canonicalArea(String(areaName || '').toLowerCase());
+  if(!name){ appendOutput('[Gaardian] no area to remap -- walk into one first\n','error'); return 0; }
+  const areaid = gaardianAreaIdFor(name);
+  if(areaid == null){ appendOutput('[Gaardian] no map for "'+name+'"\n','error'); return 0; }
+  try {
+    sqlDb.run("DELETE FROM exits WHERE from_uid LIKE ?", ['gaardian:'+areaid+':%']);
+    sqlDb.run("DELETE FROM rooms WHERE uid LIKE ?",      ['gaardian:'+areaid+':%']);
+    sqlDb.run('DELETE FROM gaardian_imported WHERE areaid=?', [areaid]);
+  } catch(e){ console.error(e); }
+  const count = importGaardianArea(areaid, name, true);
+  appendOutput('[Gaardian] remapped "'+name+'": '+count+' rooms re-imported\n','system');
+  persistDb();
+  return count;
+}
+
 export function importGaardianAreaByName(areaName){
   if(!sqlDb || !gaardianDb || !areaName) return false;
   const name=areaName.toLowerCase();

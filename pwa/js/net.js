@@ -1,6 +1,6 @@
 // net.js -- extracted from index.html
 
-import { exportDb, importDb, mapHints } from './db.js';
+import { exportDb, importDb, mapHints, remapArea } from './db.js';
 import { currentRoom, noticeVitalsText, processGMCP } from './gmcp.js';
 import { showFullMap } from './map.js';
 import { doNavTo, doRunto, navDiag, onMudText, walkToCoords } from './nav.js';
@@ -310,6 +310,7 @@ const HELP = [
     { cmds: ['medic'], args: '[heal-potion] [mana-potion] [quaff%]  (prefix a pill with eat:)', what: 'watch your health during a fight and heal, quaff or drink mana the moment a threshold is crossed -- the gap a human cannot cover' },
     { cmds: ['medicoff'], args: '', what: 'stop the medic' },
     { cmds: ['veil'], args: '[command; command...]', what: 'wait for Veil of Stone to be up, then send the command -- physical immunity for the room that kills you on entry' },
+    { cmds: ['remap'], args: '[area]', what: "throw away this area's imported map and take it from Gaardian again -- the repair when refused moves have parked so many edges that nothing can path" },
     { cmds: ['navdiag'], args: '[room name]', what: 'why can it not path there: client build, this room and its edges, what it has been identified as, and the route to the named room' },
     { cmds: ['map'], args: '', what: 'the full-screen map' },
     { cmds: ['rooms'], args: '', what: 'the rooms panel; tap one to walk there' },
@@ -429,6 +430,7 @@ export function submitCmd(){
     if(cmd==='import'){ importDb(); return; }
     if(cmd==='campaign'){ togglePanel('campaign'); return; }
     if(cmd==='chat'){ openChat(parts[1]||''); togglePanel('chat'); return; }
+    if(cmd==='remap'){ remapArea(parts.slice(1).join(' ') || currentRoom.area || ''); return; }
     if(cmd==='hints'){
       const area = String(currentRoom.area||'');
       const want = parts.slice(1).join(' ');

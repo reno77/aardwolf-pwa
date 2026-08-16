@@ -19,7 +19,7 @@
 //     with "is not available here". A custom exit is now simply typed.
 
 import { mapHints, sqlDb } from './db.js';
-import { gaardianCandidateUids, gaardianPath, reconnectDanglingExits } from './roomid.js';
+import { gaardianAnchorUid, gaardianCandidateUids, gaardianPath, reconnectDanglingExits } from './roomid.js';
 import { parseKeySource } from './keys.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
          STATE_READY, STATE_FIGHTING, STATE_SLEEPING, STATE_RESTING,
@@ -199,7 +199,16 @@ export function planRoute(fromUid, targetUid, ruledOut){
   if(direct) return {path: direct, viaCandidate: null, choices: 0};
 
   const skip = ruledOut || [];
-  const candidates = gaardianCandidateUids(fromUid).filter(c => !skip.includes(c));
+  // The anchor counts as a candidate. Anchoring a room CLEARS its candidate list -- being
+  // sure which Gaardian room this is means there is nothing left to be unsure about -- so
+  // relying on candidates alone left the rooms we know best with no route source at all.
+  // Only matters when the live node is an island, which is exactly what happens in an
+  // area whose exits all report -1 (Xyl's Mosaic): no edge is ever recorded from the live
+  // uid, so `findPath` has nowhere to start.
+  const anchor = gaardianAnchorUid(fromUid);
+  const candidates = gaardianCandidateUids(fromUid)
+    .concat(anchor ? [anchor] : [])
+    .filter((c, i, a) => a.indexOf(c) === i && !skip.includes(c));
   let best = null, bestFrom = null;
   for(const c of candidates){
     if(c === fromUid) continue;
@@ -1211,12 +1220,21 @@ export function onMudText(text){
       return;
     }
     // "There is no exit that way" is the map being wrong, not the walk being
-    // impossible: delete the edge we were told to take and try another route.
-    // Leaving it in place meant the same bad edge was chosen again next time.
+    // impossible: park the edge we were told to take and try another route.
+    // Leaving it usable meant the same bad edge was chosen again next time.
+    //
+    // Parked, not DELETEd. The refusal only proves the exit is missing from the room we
+    // are ACTUALLY in, which is not the same as the room the plan thought we were in --
+    // and where identification is weakest is exactly where this fires. Xyl's Mosaic has
+    // 100 rooms, 17 of them called "Rubber Garden", and one bad guess walked the graph
+    // out of existence one edge at a time: by the end the live room had no exits at all
+    // and nothing could path anywhere, while the Gaardian data it came from was intact
+    // and fully connected the whole time. level 999 keeps it out of routing exactly as a
+    // DELETE did, and /remap can put it back.
     if(b.deadEnd && walk.lastFrom && walk.lastDir){
       try {
-        sqlDb.run('DELETE FROM exits WHERE from_uid=? AND dir=?', [walk.lastFrom, walk.lastDir]);
-        appendOutput('[nav] there is no '+walk.lastDir+' here; removed it from the map\n','system');
+        sqlDb.run('UPDATE exits SET level=999 WHERE from_uid=? AND dir=?', [walk.lastFrom, walk.lastDir]);
+        appendOutput('[nav] there is no '+walk.lastDir+' here; parked that edge\n','system');
       } catch(e){ console.error(e); }
       if(++walk.repaths <= MAX_REPATH){
         walk.plan = null;              // the plan was built on the edge just deleted

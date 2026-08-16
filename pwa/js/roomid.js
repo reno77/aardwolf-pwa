@@ -566,6 +566,28 @@ export function gaardianCandidateUids(uid){
   } catch(e){ return []; }
 }
 
+/**
+ * The Gaardian room this live room has been positively identified as, if any.
+ *
+ * `room_candidates` holds the *uncertain* identifications, and an anchor clears them --
+ * so a room we are sure about has an empty candidate list, and anything falling back on
+ * candidates alone has nothing to work with. That is fine while the live room has its own
+ * edges, and useless when it does not: in Xyl's Mosaic every exit reports -1, so no edge
+ * is ever recorded, the live node is an island, and pathing failed even though the room
+ * was anchored to a Gaardian room with a full set of exits.
+ */
+export function gaardianAnchorUid(uid){
+  if(!sqlDb || !uid) return null;
+  try {
+    const r = sqlDb.exec(
+      'SELECT gaardian_areaid, gaardian_local_id FROM room_gaardian_map WHERE aardwolf_uid=?',
+      [String(uid)]);
+    if(!r.length || !r[0].values.length) return null;
+    const [areaid, localId] = r[0].values[0];
+    return gaardianUid(areaid, localId);
+  } catch(e){ return null; }
+}
+
 /** Every Gaardian room in this area with this name. */
 function roomsNamed(areaid, roomName){
   try {
