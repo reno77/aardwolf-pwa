@@ -1316,7 +1316,32 @@ export function xcpStep(t){
           && (c.minLevel == null || charLevel >= c.minLevel));
         // Exact name first among those that fit: "Northeast Corner" beats "Northeast
         // Corner of the Bumper Cars" when the game said the former.
-        const pick = fits.find(c => c.exact) || fits[0];
+        // Rank them, and KEEP THE RUNNERS-UP.
+        //
+        // The level filter routinely leaves a tie and the old code took whichever row
+        // the database happened to return first. At level 97 "Sleeping Quarters" fits
+        // both The Empire of Talsa (70-130) and The Monastery (90-120), and "The Smithy"
+        // fits both The Monastery (90-120) and Elemental Chaos (90-150) -- the studying
+        // monk and the blacksmith were in The Monastery both times, and the first-row
+        // guess sent the helper to the other one, twice. It then exhausted every
+        // same-named room in the wrong area and gave up, never once considering the
+        // area it had already listed as a candidate.
+        //
+        // Ranking: an exact room-name match beats a prefix match, then the TIGHTER level
+        // range wins. A narrow band is a more specific claim about who belongs there --
+        // 90-120 describes its occupants better than 90-150 does -- and it is the only
+        // signal available here that is not a coin toss.
+        const ranked = fits.slice().sort((a, b) => {
+          if(a.exact !== b.exact) return a.exact ? -1 : 1;
+          const spanA = (a.high - a.low), spanB = (b.high - b.low);
+          return spanA - spanB;
+        });
+        // Everything still plausible, best first, for xcpNextAreaCandidate to fall
+        // through when the mob turns out not to be in the winner.
+        t.areaCandidates = ranked.map(c => ({area: c.area, room: c.room,
+                                             low: c.low, high: c.high}));
+        t.areaCandidateIdx = 0;
+        const pick = ranked[0];
         if(pick && !areaNameMatches(pick.area, t.areaName)){
           appendOutput('[S&D] "'+(t.rawLoc||t.roomName)+'" exists in '+candidates.length
             + ' areas; at level '+charLevel+' the campaign means '+pick.area
@@ -1408,6 +1433,9 @@ export function xcpStep(t){
           startAutoHunt(t);
           return;
         }
+        // "Not in this area" is the cue to try the next candidate area, when the room
+        // name was ambiguous enough to have one.
+        if(xcpNextAreaCandidate(t)) return;
         // Ending the target properly rather than just dropping it. Nulling pendingXcp on
         // its own left the run with nothing in progress and nothing scheduled, so an
         // unattended campaign only recovered when the 25s stall watchdog happened to
@@ -1757,6 +1785,49 @@ export function parseWhereOrdOutput(text){
     xcpGotoInstance(st.t);
     return;
   }
+}
+
+/**
+ * The room name was ambiguous and this area turned out to be wrong: try the next one.
+ *
+ * `cp check` names a room and no area, so the area is inferred -- and the inference is
+ * a guess whenever more than one area has a room by that name and the character's level
+ * fits both. Rather than make the guess better (there is no signal here that reliably
+ * separates The Monastery from Elemental Chaos), make being wrong cheap: keep the
+ * ranked list and walk down it. The game settles it in one `where` from inside each
+ * area, which is exactly how a person does this.
+ *
+ * Returns true if a new area was adopted and the caller should stop.
+ */
+export function xcpNextAreaCandidate(t){
+  if(!t || !t.areaCandidates || t.isQuest) return false;
+  const list = t.areaCandidates;
+  let i = (t.areaCandidateIdx == null ? 0 : t.areaCandidateIdx) + 1;
+  if(i >= list.length) return false;
+  t.areaCandidateIdx = i;
+  const next = list[i];
+  appendOutput('[S&D] not in ' + t.areaName + '. "' + (t.rawLoc || t.roomName)
+    + '" also exists in ' + next.area
+    + (next.low != null ? ' (' + next.low + '-' + next.high + ')' : '')
+    + ' -- trying there ('
+    + (i + 1) + ' of ' + list.length + ').\n', 'quest');
+
+  t.areaName = next.area; t.area = next.area;
+  t.roomName = next.room;
+  // Everything derived from the old area has to go, or the walk resumes against it.
+  t.roomUid = null;
+  t.areaUid = null;
+  t.recallSent = false;
+  t.located = false;
+  t.campaignInstance = null;
+  t.whereInstances = null;
+  t.twinsTried = [];
+  t.whereOrd = 1;
+  t.whereIndex = null;
+  t.kwIndex = null;
+  t.huntFallbackTried = false;
+  setTimeout(() => { if(sndState.pendingXcp === t) xcpStep(t); }, 600);
+  return true;
 }
 
 /** Move to the next candidate keyword. Returns false when they are exhausted. */
@@ -2416,6 +2487,9 @@ export function parseWhereOutput(text){
     const n=t.whereAwaiting;
     t.whereAwaiting=null;
     if(!nextWhereProbe(t)){
+      // Every keyword exhausted here means the mob is not in THIS area -- which, when
+      // the room name matched several areas, says to go and look in the next one.
+      if(xcpNextAreaCandidate(t)) return;
       appendOutput('[S&D] "'+t.mob+'" not found on any of: '+t.kwList.join(', ')
         + ' (up to '+WHERE_ORD_MAX+' each)\n','error');
       t.located=true;
@@ -3142,6 +3216,10 @@ export function xcpSweepTwins(t){
     // the campaign hordling sat in the fifth room while this reported it missing.
     // Walking the area and trying each room found it in five rooms.
     if(sweepByWalking(t)) return;
+    // The room name exists in more than one area, and this was the wrong one. Try the
+    // next candidate rather than giving up: "it was in none of them" is evidence about
+    // the AREA, not about the mob.
+    if(xcpNextAreaCandidate(t)) return;
     appendOutput('[S&D] tried every room called "'+roomName+'" in '+t.areaName
       + ' and '+t.mob+' was in none of them -- it has moved, or the room is not mapped. '
       + 'Run /xcp '+t.index+' again to re-locate.\n','error');
