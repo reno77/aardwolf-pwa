@@ -111,8 +111,17 @@ failed. Verify with `look`, not with the alias's output.
 
 **Some areas block both.** `recall` → "You cannot recall from this room", and the portal
 silently does nothing. The Ruins of Diamond Reach is one. When both fail, **walk out** to
-the area entrance and recall from outside. `recall` also does **not** necessarily go to
-Aylor — it goes to your recall point, which has landed in a PK-flagged area before.
+the area entrance and recall from outside. `recall` also does **not** go to Aylor — it
+goes to your recall point, currently *Within the core of the Great Tree*, a PK area. It is
+still the way out of a no-portal room, but reaching Aylor afterwards needs the garbage-can
+portal. And `runto` needs the recall ROOM, not merely Aylor: standing at the questmaster,
+`runto <area>` silently does nothing at all.
+
+**Locked doors are usually solvable from the map data** — the key and how to get it are in
+`exits.key_name` / `key_desc`, in three flavours: buy it, take it off a named mob, or give
+something to somebody. Before waiting on a repop, BFS the area allowing each key in turn to
+see which one actually gates your target; in The Monastery only one of the two mattered.
+See `memory/aardwolf-key-puzzles.md`.
 
 **Area keywords are not derivable.** `runto diamond` goes to *Diamond Soul Revelation*;
 The Ruins of Diamond Reach is **`ruins`**. Harvest the real list with
@@ -151,9 +160,16 @@ wrong area, not that the mob is absent. Travel first, then `where`.
 
 A keyword failing proves nothing about the other commands.
 
-**A campaign mob is the one that cannot be hunted:** "You seem unable to hunt that target
-for some reason." That is the reliable way to pick it out of four identical
-"A knight is here" mobs. The lookalikes give **0 experience** and do not advance `cp check`.
+**"You seem unable to hunt that target for some reason" means it IS the campaign mob** --
+a reliable way to pick it out of four identical "A knight is here" mobs. **The reverse
+does not hold**: the kobold knight hunted perfectly well and was still the target, so a
+successful hunt rules nothing out. The lookalikes give **0 experience** and do not advance
+`cp check`, which is the cheap way to tell afterwards.
+
+**A mob immune to your damage type can be killed bare-handed.** Abigail answered every
+swing with "Abigail is unaffected by your shadow!" -- the Amethyst Shards are shadow
+weapons. `remove amethyst` twice and punch: 100% to dead on the first attempt. Remember to
+`wear amethyst` twice afterwards. Reach for this whenever the enemy bar will not move.
 
 **Hidden mobs cannot be killed.** `(Hidden)` in `scan` means `kill` answers "They aren't
 here" from inside the room. `cast 'detect hidden'` — spellup's copy lapses.
