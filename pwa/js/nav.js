@@ -683,6 +683,7 @@ function step(){
       // whichever edge we last walked.
       walk.lastFrom = currentRoom.uid;
       walk.lastDir = dir;
+      walk.lastArea = String(currentRoom.area || '');
       appendOutput('[nav] ' + dir + ' is not open here; trying "open ' + dir + '"\n','system');
       sendCmdRaw('open ' + dir);
       clearStepTimer();
@@ -696,6 +697,7 @@ function step(){
   walk.opened = false;
   walk.lastFrom = currentRoom.uid;
   walk.lastDir = dir;
+  walk.lastArea = String(currentRoom.area || '');
   // A random exit lands you somewhere the map cannot predict, so claim no
   // expectation: onRoomChanged must not "correct" the edge to whichever room
   // this particular roll produced, and landing elsewhere must not count against
@@ -856,12 +858,59 @@ export function onRoomChanged(){
         appendOutput(`[nav] corrected map: ${walk.lastDir} from that room leads here\n`,'system');
       } catch(e){ console.error(e); }
     }
+    // A step that changed AREA is a trapdoor, not a wrong turn.
+    //
+    // Halls of the Damned has a shaft that drops you into the tombs next door, and it
+    // is one-way: there is no route back, so re-pathing from where you land cannot
+    // work. The walker did it anyway -- corrected the edge, re-planned, wandered the
+    // wrong area, and ejected the character mid-hunt over and over, which is most of
+    // what made one campaign target take hours. Worse, the corrected edge looks like
+    // an ordinary exit afterwards, so the next path through that room falls down it
+    // again.
+    //
+    // So: mark it never-auto-path (level 999, the same flag the Gaardian importer
+    // uses for exits it will not plan through) and stop, saying what happened. The
+    // room stays in the map and stays walkable by hand -- only automatic routing
+    // avoids it.
+    // The area we were standing in when the step went out, taken from GMCP rather than
+    // looked up: the map only knows the area of a room it has already recorded, and the
+    // rooms this matters for are exactly the ones being walked for the first time.
+    const cameFromArea = walk.lastArea || (walk.lastFrom ? areaOfUid(walk.lastFrom) : null);
+    const hereArea = String(currentRoom.area || '');
+    // ...but only when the step was not SUPPOSED to cross a boundary. Plenty of routes
+    // legitimately leave an area, and aborting those would break ordinary travel; if the
+    // room we were aiming at is recorded in the area we actually reached, this is a
+    // normal cross-area step that merely landed a room off.
+    const expectedArea = walk.expectUid ? areaOfUid(walk.expectUid) : null;
+    const meantToCross = expectedArea && hereArea && expectedArea === hereArea;
+    if(cameFromArea && hereArea && cameFromArea !== hereArea && !meantToCross){
+      try {
+        sqlDb.run('UPDATE exits SET level=999 WHERE from_uid=? AND dir=?',
+          [walk.lastFrom, walk.lastDir]);
+      } catch(e){ console.error(e); }
+      finish(false, '"' + walk.lastDir + '" dropped us out of ' + cameFromArea
+        + ' into ' + hereArea + ' -- one-way exit, not routing through it again');
+      return;
+    }
     if(++walk.repaths > MAX_REPATH){
       finish(false, 'kept ending up somewhere unexpected; stopping');
       return;
     }
   }
   step();
+}
+
+/** Which area the map records for a uid, or null when it has never been visited. */
+function areaOfUid(uid){
+  if(!sqlDb || !uid) return null;
+  try {
+    const r = sqlDb.exec('SELECT area FROM rooms WHERE uid=?', [String(uid)]);
+    if(r.length && r[0].values.length){
+      const a = r[0].values[0][0];
+      return a ? String(a) : null;
+    }
+  } catch(e){ /* not in the map */ }
+  return null;
 }
 
 // A move can fail with no room change at all, in which case room.info never
