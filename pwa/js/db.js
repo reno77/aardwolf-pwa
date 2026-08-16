@@ -1192,6 +1192,53 @@ export function unparkItemExits(){
  * Campaigns are drawn from areas in your own level range, so the range is the
  * disambiguator, and the reference map has carried it all along.
  */
+/**
+ * The map's own hint notes for an area, optionally filtered to ones that mention `needle`.
+ *
+ * These are the labels drawn on the Gaardian web map, and they carry the one thing the
+ * room graph cannot: how to SATISFY an exit. The graph says a door wants
+ * `give vegetable Sarah`; the label says *kill a farmer, wear conadrain clothes, be
+ * visible, then give*. Reading only the graph, The Empire of Talsa looks like an
+ * unsolvable fetch chain -- which is the wrong conclusion, and it cost a campaign's worth
+ * of guessing before anyone thought to look at the picture.
+ *
+ * `labels` ships empty; tools/fetch_map_labels.py fills it from the web maps.
+ */
+export function mapHints(areaName, needle){
+  if(!gaardianDb || !areaName) return [];
+  let rows = [];
+  // GMCP reports the area KEYWORD ('talsa'); the reference map stores the display name
+  // ('The Empire of Talsa'), and neither contains the other in every case. Matching is
+  // done in JS rather than SQL on purpose -- the SQL version needed quoted LIKE wildcards,
+  // the escaping broke, and the try/catch swallowed the error so hints silently returned
+  // nothing while looking like "this area has no notes".
+  const want = String(areaName).trim().toLowerCase();
+  if(!want) return [];
+  try {
+    const r = gaardianDb.exec(
+      'SELECT a.areaname, l.text FROM labels l JOIN areas a ON a.areaid = l.areaid');
+    const all = r.length ? r[0].values : [];
+    rows = all.filter(v => {
+      const an = String(v[0] || '').toLowerCase();
+      return an === want || an.includes(want) || want.includes(an);
+    }).map(v => String(v[1]));
+  } catch(e){ console.error(e); return []; }
+
+  // Only labels that are actually prose are useful as hints: the maps also carry
+  // one-word decorations ("Moricand", "To Gelidus") that say nothing on their own.
+  rows = rows.filter(t => t.split(/\s+/).length >= 4);
+  if(!needle) return rows;
+
+  // Match on the interesting WORDS of the action rather than the whole string:
+  // the exit is `give vegetable Sarah` and the label says "...give vegetable Sarah to get
+  // transported", but it is the words `vegetable` and `Sarah` that tie them together.
+  const words = String(needle).toLowerCase().match(/[a-z']{3,}/g) || [];
+  const skip = new Set(['give','say','the','and','for','get','put','open','enter','with','from','into','you','your']);
+  const keys = words.filter(w => !skip.has(w));
+  if(!keys.length) return rows;
+  return rows.filter(t => { const low = t.toLowerCase(); return keys.some(k => low.includes(k)); });
+}
+
 export function gaardianAreasWithRoom(name){
   if(!gaardianDb || !name) return [];
   const n = String(name).trim().toLowerCase();

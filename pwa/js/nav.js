@@ -18,7 +18,7 @@
 //     so that test was false every time and *every* custom-exit step aborted
 //     with "is not available here". A custom exit is now simply typed.
 
-import { sqlDb } from './db.js';
+import { mapHints, sqlDb } from './db.js';
 import { gaardianCandidateUids, gaardianPath, reconnectDanglingExits } from './roomid.js';
 import { parseKeySource } from './keys.js';
 import { currentRoom, charState, effectiveLevel, onCharStateChange,
@@ -900,6 +900,20 @@ export function onRoomChanged(){
   step();
 }
 
+
+/** Print up to three map hints relevant to `what`, once each per walk. */
+const hintedAlready = new Set();
+function showMapHints(what){
+  try {
+    const area = String(currentRoom.area || '');
+    if(!area) return;
+    for(const h of mapHints(area, what).slice(0, 3)){
+      if(hintedAlready.has(h)) continue;   // the same note on every retry is noise
+      hintedAlready.add(h);
+      appendOutput('[map] ' + h + '\n','quest');
+    }
+  } catch(e){ /* hints are a bonus, never a failure path */ }
+}
 /** Which area the map records for a uid, or null when it has never been visited. */
 function areaOfUid(uid){
   if(!sqlDb || !uid) return null;
@@ -1143,6 +1157,10 @@ export function onMudText(text){
     }
     // Informational only: a step is already scheduled, let it run.
     if(b.ignore) return;
+    // The map's own note about this obstacle, if it has one. `reportKeyFor` covers doors
+    // the DB records a key for; this covers the rest -- password exits, give-this-to-that,
+    // and guards -- which is where the graph alone leaves you guessing.
+    showMapHints(walk.lastDir);
     if(b.locked) reportKeyFor(walk.lastFrom, walk.lastDir);
     if(b.stand){ unspendLastStep(); sendCmdRaw('stand'); clearStepTimer(); walk.timer = setTimeout(step, 800); return; }
     if(b.retry){ unspendLastStep(); clearStepTimer(); walk.timer = setTimeout(step, 1200); return; }
