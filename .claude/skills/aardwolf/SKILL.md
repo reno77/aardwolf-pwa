@@ -53,7 +53,7 @@ one-off puzzles the client cannot reasonably learn.
 ## 2. Character and connection
 
 - **MUD:** `aardwolf.org:4000`. Port 23 is character creation only.
-- **Character:** `bedokman` (public in-game name), **level 96**, Tier 5. The password is
+- **Character:** `bedokman` (public in-game name), **level 98**, Tier 5. The password is
   **not** in this repo — it lives in `memory/aardwolf-login.md` and in the client's
   localStorage. Never commit it; this repo is public.
 - **Relay:** `python relay_minimal.py`, serves the client on `http://localhost:8765`.
