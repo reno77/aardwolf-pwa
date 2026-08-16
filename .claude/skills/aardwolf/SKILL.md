@@ -117,7 +117,15 @@ still the way out of a no-portal room, but reaching Aylor afterwards needs the g
 portal. And `runto` needs the recall ROOM, not merely Aylor: standing at the questmaster,
 `runto <area>` silently does nothing at all.
 
-**Locked doors are usually solvable from the map data** — the key and how to get it are in
+**Try `pick <direction>` on a locked door before anything else.** The character can pick
+locks, and it opened every locked door in The Monastery in one command each — after I had
+spent an hour treating a key-holder's respawn as a hard prerequisite. A locked door is a
+lock-picking problem before it is a key problem. Note the map data can point the wrong
+way: it says The Monastery's stone key is on "The robed sentry", and that mob stands
+behind the very door its key opens — a key-holder you cannot reach without the key is the
+tell that players get in some other way.
+
+**Failing that, locked doors are usually solvable from the map data** — the key and how to get it are in
 `exits.key_name` / `key_desc`, in three flavours: buy it, take it off a named mob, or give
 something to somebody. Before waiting on a repop, BFS the area allowing each key in turn to
 see which one actually gates your target; in The Monastery only one of the two mattered.
