@@ -19,7 +19,7 @@ else's server doing us a favour.
 
     python tools/fetch_map_labels.py [--force] [--delay 0.4] [--only 119,131]
 """
-import argparse, re, sqlite3, sys, time, urllib.error, urllib.request
+import argparse, html, re, sqlite3, sys, time, urllib.error, urllib.request
 
 DB  = "pwa/gaardian_maps.db"
 URL = "https://maps.gaardian.com/index.php?areaid=%d"
@@ -33,7 +33,22 @@ LABEL = re.compile(
 )
 
 def unescape(s):
-    return s.replace('\\"', '"').replace("\\'", "'").replace('\\\\', '\\').replace('\\/', '/')
+    """Undo the two layers of escaping between the page source and readable text.
+
+    The label is a JS string literal embedded in HTML, so it arrives escaped twice: the
+    author's quotes survive as `&quot;` from the HTML layer, and `\\"` / `\\/` from the JS
+    layer. Decoding only the JS layer leaves notes reading
+    `the Storm Ships room &quot;At the Cristallium&quot;`, which is what shipped on the
+    first pass -- readable enough to miss in review, and wrong everywhere it is displayed.
+    """
+    s = s.replace('\\"', '"').replace("\\'", "'").replace('\\\\', '\\').replace('\\/', '/')
+    s = html.unescape(s)
+    # Some labels are little HTML documents -- "<b>Speedwalks</b>:<br>Angstrom's Porch:
+    # run edssdn". The tags carry no meaning once this is a line of text in a MUD client,
+    # but the <br> separates entries and has to survive as something.
+    s = re.sub(r'<br\s*/?>', ' | ', s, flags=re.I)
+    s = re.sub(r'<[^>]+>', '', s)
+    return re.sub(r'\s+', ' ', s).strip()
 
 def fetch(areaid, tries=3, delay=1.0):
     req = urllib.request.Request(URL % areaid, headers={"User-Agent": UA})

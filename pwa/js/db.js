@@ -1218,9 +1218,15 @@ export function mapHints(areaName, needle){
     const r = gaardianDb.exec(
       'SELECT a.areaname, l.text FROM labels l JOIN areas a ON a.areaid = l.areaid');
     const all = r.length ? r[0].values : [];
+    // Compare with punctuation and spaces removed. GMCP's keyword is a squashed form of
+    // the display name -- 'lemdagor' for 'Storm Ships of Lem-Dagor' -- so a plain
+    // substring test fails on the hyphen alone, and the area silently looks like it has
+    // no notes when it is the one carrying the answer.
+    const squash = x => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const w = squash(want);
     rows = all.filter(v => {
-      const an = String(v[0] || '').toLowerCase();
-      return an === want || an.includes(want) || want.includes(an);
+      const an = squash(v[0]);
+      return !!an && (an === w || an.includes(w) || w.includes(an));
     }).map(v => String(v[1]));
   } catch(e){ console.error(e); return []; }
 
