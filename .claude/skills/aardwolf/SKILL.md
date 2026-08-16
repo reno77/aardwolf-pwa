@@ -182,6 +182,13 @@ weapons. `remove amethyst` twice and punch: 100% to dead on the first attempt. R
 **Hidden mobs cannot be killed.** `(Hidden)` in `scan` means `kill` answers "They aren't
 here" from inside the room. `cast 'detect hidden'` — spellup's copy lapses.
 
+**Duplicated + wandering mobs: re-enumerate, do not re-reason.** Several mobs can share a
+name (the Scarred Lands has many "a black dragon"), they drift between rooms and repop
+fast. `hunt <kw>` answering "unable to hunt" means no HUNTABLE one is in range -- NOT that
+the one beside you is the campaign mob; conflating those cost ten wasted kills. Re-run
+`where 1.<kw>`, `where 2.<kw>` ... every few minutes and go wherever they have moved to,
+including rooms already written off. Descriptions may not separate them either.
+
 **Mobs wander.** A `where` result is a snapshot; by the time you walk there it may have
 moved. Re-`where` on arrival rather than assuming.
 
