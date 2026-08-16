@@ -1,5 +1,6 @@
 // ui.js -- extracted from index.html
 
+import { boards, noteBoardLine, refreshBoards, renderBoard } from './board.js';
 import { noteChatLine, renderChat, totalUnread } from './chat.js';
 import { fadoTriggers, persistDb, persistDbNow, replaceDb, sqlDb } from './db.js';
 import { renderRooms } from './nav.js';
@@ -28,7 +29,7 @@ function emitLine(line, cls){
   // line goes through, and doing it here means the panel cannot miss a line that the
   // main window showed. Only MUD output is offered -- client messages carry a `cls`
   // and are ours, not somebody talking.
-  if(!cls) noteChatLine(line);
+  if(!cls){ noteChatLine(line); noteBoardLine(line); }
 }
 
 // MUD output arrives in arbitrary TCP-sized chunks, so a single line is often
@@ -418,7 +419,7 @@ export function deleteTriggerEdit(){
 // =============================================================================
 export function togglePanel(name){
   const panels=['rooms','aliases','triggers','campaign'];   // the swipe cycle
-  const all=[...panels,'settings','inventory','chat'];
+  const all=[...panels,'settings','inventory','chat','board'];
   const idx=panels.indexOf(name);
   if(idx>=0) swipePanelState=idx;   // settings/inventory are outside the cycle
   // Hide every panel, not just the swipeable ones -- inventory was absent from
@@ -430,6 +431,7 @@ export function togglePanel(name){
   if(name==='triggers') renderTriggers();
   if(name==='campaign') renderCampaign();
   if(name==='chat'){ renderChat(); updateChatBadge(); }
+  if(name==='board'){ renderBoard(); if(!boards.length) refreshBoards(); }
   if(name==='settings'){
     document.getElementById('set-buffer').value=maxLines;
     document.getElementById('db-info').textContent=sqlDb?'Ready':'Not loaded';

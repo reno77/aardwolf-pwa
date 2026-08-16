@@ -19,6 +19,7 @@ import { sendCmd, submitCmd, cmdHistoryUp, cmdHistoryDown, doConnect,
          showLogin, doLogin, closeLogin } from './net.js';
 import { renderRooms } from './nav.js';
 import { clearChat, onUnreadChange, sendChat } from './chat.js';
+import { onBoardChange, refreshBoards, renderBoard, submitNote, toggleCompose } from './board.js';
 import { showFullMap, hideFullMap } from './map.js';
 import { xcpNext, refreshCampaign } from './snd.js';
 import { dinvCommand, buildInventory, renderInventory } from './dinv.js';
@@ -37,6 +38,8 @@ Object.assign(window, {
   renderRooms, showFullMap, hideFullMap, xcpNext, refreshCampaign,
   // chat
   clearChat, sendChat,
+  // boards
+  refreshBoards, submitNote, toggleCompose,
   // inventory (dinv)
   dinvCommand, buildInventory, renderInventory,
   // db
@@ -49,6 +52,8 @@ Object.assign(window, {
 // The chat button's unread count. Wired here rather than inside chat.js so that module
 // stays about classifying lines and knows nothing about which button represents it.
 onUnreadChange(()=>updateChatBadge());
+// Redraw the board panel whenever a forum/post/note parse lands.
+onBoardChange(()=>renderBoard());
 {
   const box = document.getElementById('chat-input');
   if(box) box.addEventListener('keydown', e => { if(e.key === 'Enter') sendChat(); });

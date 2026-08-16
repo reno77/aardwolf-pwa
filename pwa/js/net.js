@@ -19,6 +19,7 @@ import { dinvCommand, parseInvData, parseInvDetails, dinvWatchText } from './din
 import { commandMap } from './state.js';
 import { doXq, parseQuestRoomOutput, parseQuestStatusOutput, questInfo } from './quest.js';
 import { noteRoomChars } from './questtag.js';
+import { openBoardPanel } from './board.js';
 import { openChat } from './chat.js';
 import { parseGrindOutput, startGrind, stopGrind } from './grind.js';
 import { parseMedicOutput, startMedic, stopMedic } from './medic.js';
@@ -316,6 +317,7 @@ const HELP = [
     { cmds: ['cpinfo', 'cinfo'], args: '', what: 'read cp info' },
     { cmds: ['campaign'], args: '', what: 'the campaign panel' },
     { cmds: ['chat'], args: '[clan|tell|group|say]', what: 'the chat panel -- clan, tells, group and public talk kept out of the combat scroll' },
+    { cmds: ['board','notes'], args: '[forum]', what: 'the bulletin board panel -- read and write forum notes' },
     { cmds: ['keyclean'], args: '', what: 'drop the duplicate items off your keyring, keeping one of each' },
     { cmds: ['keyring'], args: '', what: 'list the keys on your keyring -- the game checks it when unlocking, so a key here means no errand' },
     { cmds: ['cpnew'], args: '[auto]', what: 'walk to a quest master, take a campaign, and with "auto" start working through it' },
@@ -421,6 +423,7 @@ export function submitCmd(){
     if(cmd==='import'){ importDb(); return; }
     if(cmd==='campaign'){ togglePanel('campaign'); return; }
     if(cmd==='chat'){ openChat(parts[1]||''); togglePanel('chat'); return; }
+    if(cmd==='board'||cmd==='notes'){ openBoardPanel(parts.slice(1).join(' ')); togglePanel('board'); return; }
     if(cmd==='cpinfo' || cmd==='cinfo'){ doCpInfo(); return; }
     if(cmd==='cpcheck' || cmd==='ccheck'){ doCpCheck(); return; }
     if(cmd==='xcp'){
