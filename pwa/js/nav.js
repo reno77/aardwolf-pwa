@@ -1628,10 +1628,18 @@ export function doNavTo(target){
 
 export function doRunto(target){
   if(!sqlDb || !target){ appendOutput('Usage: /runto <room name>\n','system'); return; }
-  const res=sqlDb.exec("SELECT uid, name FROM rooms WHERE name LIKE ? LIMIT 1", ['%'+target+'%']);
-  if(!res.length || !res[0].values.length){ appendOutput('Room not found: '+target+'\n','error'); return; }
-  const [targetUid, targetName]=res[0].values[0];
   if(!currentRoom.uid){ appendOutput('Current room unknown. Walk around first.\n','error'); return; }
-  if(currentRoom.uid===targetUid){ appendOutput('Already there!\n','system'); return; }
+  // Go through resolveNavName rather than picking a room here. This used to be its own
+  // `SELECT uid FROM rooms WHERE name LIKE ? LIMIT 1` -- no area preference, no
+  // reachability test, no ORDER BY, so of the 16 rooms called "A Dark Hallway" it took
+  // whichever SQLite happened to return first. Standing in Prosper's Island it chose one
+  // in Rosewood and reported "no route to that room from here", which reads as a missing
+  // map rather than the wrong room. The disambiguation was already written; /runto and
+  // /goto simply were not calling it.
+  const targetUid = resolveNavName(target);
+  if(!targetUid) return;                 // resolveNavName has already explained why
+  if(currentRoom.uid === targetUid){ appendOutput('Already there!\n','system'); return; }
+  const named = sqlDb.exec('SELECT name FROM rooms WHERE uid=?', [targetUid]);
+  const targetName = (named.length && named[0].values.length) ? named[0].values[0][0] : target;
   walkTo(targetUid, () => appendOutput('Arrived at '+targetName+'.\n','system'));
 }

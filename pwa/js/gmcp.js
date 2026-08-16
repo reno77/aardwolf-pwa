@@ -2,6 +2,7 @@
 
 import { canonicalArea, mergeAreaAliases, persistDb, sqlDb } from './db.js';
 import { matchAardwolfToGaardian } from './roomid.js';
+import { learnExitFromMove } from './learn.js';
 import { renderRooms, onRoomChanged } from './nav.js';
 import { noticeQuest } from './quest.js';
 import { noticeTravelProgress, sndState, xcpStep } from './snd.js';
@@ -154,6 +155,10 @@ export function processGMCP(key, data){
     const exits=data.exits||{};
     const exitStr=Object.keys(exits).join(':');
     const now=new Date().toISOString();
+    // Before currentRoom is overwritten: if a hand-typed command moved us, write that
+    // exit down. Custom exits are invisible to GMCP, so without this the client can walk
+    // a route it has personally used and still report "no route to that room".
+    try { learnExitFromMove(currentRoom.uid, uid); } catch(e){ console.error(e); }
     // room.info.details is a comma-separated flag list (pk, shop, bank, healer,
     // quest, trainer, maze). The walker reads 'maze' to switch strategy.
     const info=String(data.details||'');

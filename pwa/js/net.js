@@ -26,6 +26,7 @@ import { parseMedicOutput, startMedic, stopMedic } from './medic.js';
 import { parseVeilOutput, startVeil } from './veil.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
 import { cleanKeyring, parseKeyringOutput, showKeyring } from './keyring.js';
+import { noteSentCommand } from './learn.js';
 import { parseRoomOrdinalOutput } from './roomord.js';
 import { parseScanOutput } from './scan.js';
 import { openTransport } from './transport.js';
@@ -59,6 +60,10 @@ export function sendCmd(text){
 export function sendCmdRaw(text){
   if(!ws||!connected){appendOutput('[Offline]\n','error');return;}
   noteIfSleep(text);
+  // Every outgoing command passes through here, which makes it the one place that can
+  // tell learn.js what was sent and from where. If the next room.info lands somewhere
+  // new that no compass exit explains, this is the command that did it.
+  try { noteSentCommand(text, currentRoom.uid); } catch(e){ /* never block a send */ }
   ws.send(JSON.stringify({cmd:text})); appendOutput('> '+text+'\n','echo');
 }
 
