@@ -659,14 +659,21 @@ export function cleanExitAction(action){
 // key_desc is a scrap of HTML; key_room is a reference of the form "rooms[12]".
 function cleanKeyDesc(html){
   if(!html) return null;
-  const t = String(html)
-    .replace(/<[^>]*>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"')
-    .replace(/\s+/g, ' ')
-    .trim();
+  // Tags first, then entities. The entity list used to be spelled out here -- nbsp, amp,
+  // #39, quot -- which covered what the notes happened to contain and silently passed
+  // everything else through, so a note with &ldquo; or &#8217; would have read as markup.
+  // The browser already has a complete decoder; use it rather than growing the list.
+  let t = String(html).replace(/<[^>]*>/g, ' ');
+  try {
+    const el = document.createElement('textarea');
+    el.innerHTML = t;
+    t = el.value;
+  } catch(e){
+    // No DOM (a test harness). Fall back to the handful that actually occur.
+    t = t.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+         .replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"');
+  }
+  t = t.replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
   return t || null;
 }
 
