@@ -24,6 +24,7 @@ import { openChat } from './chat.js';
 import { parseGrindOutput, startGrind, stopGrind } from './grind.js';
 import { parseMedicOutput, startMedic, stopMedic } from './medic.js';
 import { parseVeilOutput, startVeil } from './veil.js';
+import { parseConcentrationOutput, setRecast, recastEnabled } from './recast.js';
 import { leavePlane, stopLeavingPlane } from './plane.js';
 import { cleanKeyring, parseKeyringOutput, showKeyring } from './keyring.js';
 import { noteSentCommand } from './learn.js';
@@ -309,6 +310,7 @@ const HELP = [
     { cmds: ['grindstop'], args: '', what: 'stop the grind (/grind off works too)' },
     { cmds: ['medic'], args: '[heal-potion] [mana-potion] [quaff%]  (prefix a pill with eat:)', what: 'watch your health during a fight and heal, quaff or drink mana the moment a threshold is crossed -- the gap a human cannot cover' },
     { cmds: ['medicoff'], args: '', what: 'stop the medic' },
+    { cmds: ['recast'], args: '[off]', what: 'retry a spell that fizzled -- "you lost your concentration" costs the mana and gives nothing back, and the message names the spell so the retry is exact (3 tries per spell, then it stops)' },
     { cmds: ['veil'], args: '[command; command...]', what: 'wait for Veil of Stone to be up, then send the command -- physical immunity for the room that kills you on entry' },
     { cmds: ['remap'], args: '[area]', what: "throw away this area's imported map and take it from Gaardian again -- the repair when refused moves have parked so many edges that nothing can path" },
     { cmds: ['navdiag'], args: '[room name]', what: 'why can it not path there: client build, this room and its edges, what it has been identified as, and the route to the named room' },
@@ -431,6 +433,7 @@ export function submitCmd(){
     if(cmd==='campaign'){ togglePanel('campaign'); return; }
     if(cmd==='chat'){ openChat(parts[1]||''); togglePanel('chat'); return; }
     if(cmd==='remap'){ remapArea(parts.slice(1).join(' ') || currentRoom.area || ''); return; }
+    if(cmd==='recast'){ setRecast(!/^(off|no|stop)$/i.test(parts[1]||'') ); return; }
     if(cmd==='hints'){
       const area = String(currentRoom.area||'');
       const want = parts.slice(1).join(' ');
@@ -651,6 +654,7 @@ export function handleMessage(msg){
       parseScanOutput(msg.text);       // what is standing in the neighbouring rooms
       parseRoomOrdinalOutput(msg.text); // which copy in this room is the target
       parseKeyringOutput(msg.text);    // which keys we already carry
+      parseConcentrationOutput(msg.text); // a cast fizzled on concentration: cast it again
       processTriggers(msg.text); parseWhereOutput(msg.text); parseHuntOutput(msg.text); checkQuest(msg.text);
       break;
     case 'echo': appendOutput(msg.text,'echo'); break;
