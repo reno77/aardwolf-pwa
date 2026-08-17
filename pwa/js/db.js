@@ -369,13 +369,36 @@ export function remapArea(areaName){
   if(!name){ appendOutput('[Gaardian] no area to remap -- walk into one first\n','error'); return 0; }
   const areaid = gaardianAreaIdFor(name);
   if(areaid == null){ appendOutput('[Gaardian] no map for "'+name+'"\n','error'); return 0; }
+  let unparked = 0;
   try {
     sqlDb.run("DELETE FROM exits WHERE from_uid LIKE ?", ['gaardian:'+areaid+':%']);
     sqlDb.run("DELETE FROM rooms WHERE uid LIKE ?",      ['gaardian:'+areaid+':%']);
     sqlDb.run('DELETE FROM gaardian_imported WHERE areaid=?', [areaid]);
+
+    // Un-park the edges on the LIVE rooms too. Deleting the imported skeleton is only
+    // half the area: every exit the walker gave up on -- a door it had no key for, a
+    // guard, a refused move -- was parked at level 999 on the live uid, and those rows
+    // are not touched by a re-import. So /remap looked like it had restored the area
+    // while the exit that actually mattered stayed unroutable. In the Halls of the Damned
+    // that meant the locked door stayed unusable *after* I had the star-shaped key in
+    // hand, and every trip through it had to be walked by hand.
+    //
+    // Re-enabling an edge that is genuinely impassable costs one failed step, after which
+    // the walker parks it again. Leaving it parked costs the area. That trade is the same
+    // one behind parking instead of deleting in the first place.
+    const before = sqlDb.exec(
+      "SELECT COUNT(*) FROM exits WHERE level=999 AND from_uid IN (SELECT uid FROM rooms WHERE area=?)",
+      [name]);
+    unparked = (before.length && before[0].values.length) ? Number(before[0].values[0][0]) : 0;
+    if(unparked){
+      sqlDb.run(
+        "UPDATE exits SET level=0 WHERE level=999 AND from_uid IN (SELECT uid FROM rooms WHERE area=?)",
+        [name]);
+    }
   } catch(e){ console.error(e); }
   const count = importGaardianArea(areaid, name, true);
-  appendOutput('[Gaardian] remapped "'+name+'": '+count+' rooms re-imported\n','system');
+  appendOutput('[Gaardian] remapped "'+name+'": '+count+' rooms re-imported'
+    + (unparked ? ', '+unparked+' parked exit(s) re-enabled' : '') + '\n','system');
   persistDb();
   return count;
 }
